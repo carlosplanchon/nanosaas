@@ -1,0 +1,6 @@
+To have Redis persistence, which is very good, add this to /etc/redis/redis.conf,
+then restart Redis with sudo systemctl restart redis
+
+save 900 1
+save 300 10
+save 60 10000

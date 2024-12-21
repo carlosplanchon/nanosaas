@@ -1,0 +1,15 @@
+[api]
+# --- Internal Keys --- #
+JWT_SIGNING_SECRET_KEY = "..."  # used to sign JWTs, make sure it is really secret
+
+# --- Third parties keys --- #
+GOOGLE_CLIENT_ID = "..."
+GOOGLE_CLIENT_SECRET = "..."
+GOOGLE_REDIRECT_URI = "..."
+
+[database]
+DB_HOST = "..."
+DB_PORT = "..."  # Use an integer here.
+DB_NAME = "..."
+DB_USERNAME = "..."
+DB_PASSWORD = "..."

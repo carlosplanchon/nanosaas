@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Create or Regenerate API Key</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="flex flex-col items-center justify-center min-h-screen bg-gray-100">
+    <div class="w-full max-w-sm p-6 bg-white border border-gray-300 rounded-lg shadow-md">
+        <div class="flex flex-col items-center">
+            <h1 class="mb-6 text-2xl font-bold text-gray-700 text-center">API Key Management</h1>
+        </div>
+        <form id="api-key-form" class="space-y-4">
+            <div>
+                <label for="api_key" class="block text-sm font-medium text-gray-700">Current API Key</label>
+                <input 
+                    type="text" 
+                    id="api_key" 
+                    name="api_key" 
+                    class="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm bg-gray-50 text-gray-500" 
+                    placeholder="Fetching API key..." 
+                    readonly
+                />
+            </div>
+
+            <div class="flex justify-end">
+                <button 
+                    type="button" 
+                    id="generate-key-button"
+                    class="w-full px-4 py-2 text-white bg-blue-500 rounded-lg hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2">
+                    Generate New API Key
+                </button>
+            </div>
+
+            <div id="success-message" class="hidden text-green-600 text-sm mt-4"></div>
+            <div id="error-message" class="hidden text-red-600 text-sm mt-4"></div>
+        </form>
+    </div>
+
+    <script>
+        const apiKeyInput = document.getElementById('api_key');
+        const successMessage = document.getElementById('success-message');
+        const errorMessage = document.getElementById('error-message');
+
+        // Fetch current API key on page load
+        async function fetchApiKey() {
+            try {
+                const response = await fetch('/user/api_key', {
+                    method: 'GET',
+                    credentials: 'include'
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to fetch API key.');
+                }
+
+                const data = await response.json();
+                apiKeyInput.value = data.api_key || 'No API key generated yet';
+            } catch (error) {
+                apiKeyInput.value = 'Error fetching API key.';
+                console.error(error);
+            }
+        }
+
+        // Generate a new API key
+        document.getElementById('generate-key-button').addEventListener('click', async () => {
+            successMessage.classList.add('hidden');
+            errorMessage.classList.add('hidden');
+
+            try {
+                const response = await fetch('/user/api_key', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    credentials: 'include'
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Error: ${response.statusText}`);
+                }
+
+                const data = await response.json();
+                apiKeyInput.value = data.api_key;
+                successMessage.textContent = "API Key generated successfully.";
+                successMessage.classList.remove('hidden');
+            } catch (error) {
+                errorMessage.textContent = error.message;
+                errorMessage.classList.remove('hidden');
+            }
+        });
+
+        // Initialize page
+        fetchApiKey();
+    </script>
+</body>
+</html>

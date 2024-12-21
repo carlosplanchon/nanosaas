@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>User Panel</title>
+    <!-- Include Alpine.js -->
+    <script src="https://unpkg.com/alpinejs" defer></script>
+    <!-- Include Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 font-sans leading-normal tracking-normal">
+    <div class="container mx-auto mt-10">
+        <div class="flex justify-between items-center mb-8">
+            <h1 class="text-3xl font-bold text-gray-700">User Panel</h1>
+            <div class="flex gap-4">
+                <a href="/user/api_key_page">
+                    <button class="bg-green-500 hover:bg-green-600 text-white font-semibold py-2 px-4 rounded-md">
+                        API Key Management
+                    </button>
+                </a>
+                <a href="/auth/logout">
+                    <button class="bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded-md">
+                        Logout
+                    </button>
+                </a>
+            </div>
+        </div>
+
+        <!-- Alpine.js interactive scope -->
+        <div x-data="taskManager()" class="bg-white p-6 rounded-lg shadow-md">
+            <div class="mb-6 text-center">
+                <span class="text-gray-700 font-semibold">Remaining Credits: </span>
+                <span x-text="credits" class="text-blue-500 font-bold"></span>
+            </div>
+
+            <!-- Task Input -->
+            <div class="flex flex-col md:flex-row items-center justify-center gap-4 mb-6">
+                <label class="block text-gray-700">
+                    Number 1:
+                    <input type="number" x-model.number="newTask.x" class="mt-1 p-2 border rounded-md w-full md:w-48">
+                </label>
+                <label class="block text-gray-700">
+                    Number 2:
+                    <input type="number" x-model.number="newTask.y" class="mt-1 p-2 border rounded-md w-full md:w-48">
+                </label>
+                <button x-on:click="startTask" class="bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded-md">
+                    Start Task
+                </button>
+            </div>
+
+            <!-- Tasks Table -->
+            <div class="overflow-x-auto">
+                <table class="table-auto w-full border-collapse border border-gray-300">
+                    <thead>
+                        <tr class="bg-gray-200">
+                            <th class="border p-2">Task ID</th>
+                            <th class="border p-2">Number 1</th>
+                            <th class="border p-2">Number 2</th>
+                            <th class="border p-2">Status</th>
+                            <th class="border p-2">Result</th>
+                            <th class="border p-2">Created At</th>
+                            <th class="border p-2">Task details</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <template x-for="task in tasks" :key="task.id">
+                            <tr class="hover:bg-gray-100">
+                                <td class="border p-2 text-center" x-text="task.task_id"></td>
+                                <td class="border p-2 text-center" x-text="task.parameters.x"></td>
+                                <td class="border p-2 text-center" x-text="task.parameters.y"></td>
+                                <td class="border p-2 text-center" x-text="task.status"></td>
+                                <td class="border p-2 text-center" x-text="JSON.stringify(task.result, null, 2)"></td>
+                                <td class="border p-2 text-center" x-text="task.created_at"></td>
+                                <td class="border p-2 text-center">
+                                    <a :href="`/task_details/${task.task_id}`" class="text-blue-500 hover:underline">View Details</a>
+                                </td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function taskManager() {
+            return {
+                newTask: { x: 0, y: 0 },
+                tasks: [],
+                credits: 0, // Initialize credits
+
+                init() {
+                    this.fetchCredits();
+                    this.fetchTaskHistory();
+
+                    // Refresh task history every 10 seconds
+                    setInterval(() => {
+                        this.fetchTaskHistory();
+                        this.fetchCredits();
+                    }, 5000);
+                },
+
+                async fetchCredits() {
+                    try {
+                        const response = await fetch('/user/credits');
+                        if (response.ok) {
+                            const data = await response.json();
+                            this.credits = data.credits;
+                        } else {
+                            console.error('Failed to fetch credits');
+                            this.credits = 'Error';
+                        }
+                    } catch (error) {
+                        console.error('Error fetching credits:', error);
+                        this.credits = 'Error';
+                    }
+                },
+
+                async fetchTaskHistory() {
+                    try {
+                        const response = await fetch('/user/task_history');
+                        if (response.ok) {
+                            const data = await response.json();
+                            this.tasks = data.map(task => ({
+                                ...task,
+                                created_at: new Date(task.created_at).toLocaleString()
+                            }));
+                        } else {
+                            console.error('Failed to fetch task history');
+                        }
+                    } catch (error) {
+                        console.error('Error fetching task history:', error);
+                    }
+                },
+
+                async startTask() {
+                    try {
+                        const { x, y } = this.newTask;
+                        const response = await fetch(`/task/divide/${x}/${y}`);
+                        
+                        if (response.ok) {
+                            const data = await response.json();
+                            this.fetchTaskHistory(); // Refresh task history after starting a new task
+                        } else if (response.status === 403) {
+                            alert('Not enough credits');
+                        } else {
+                            alert('Failed to start task');
+                        }
+                    } catch (error) {
+                        console.error('Error starting task:', error);
+                        alert('An error occurred while starting the task.');
+                    }
+                }
+            };
+        }
+    </script>
+</body>
+</html>

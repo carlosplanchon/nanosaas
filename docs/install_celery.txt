@@ -1,0 +1,28 @@
+# Start Celery worker:
+python -m celery -A celery_task.celery worker --loglevel=info
+
+# On another terminal, start Celery Flower web monitor:
+python -m celery -A celery_task.celery flower --port=5555
+# TUI monitor:
+python -m celery -A celery_task.celery events
+
+# In the first terminal window, run a few more tasks, making sure you have at least one that will fail:
+task = divide.delay(1, 2)
+task = divide.delay(1, 0)
+task = divide.delay(1, 2)
+task = divide.delay(1, 3)
+
+#########################################
+#                                       #
+#   --- SETUP CELERY WITH FASTAPI ---   #
+#                                       #
+#########################################
+
+# Install Redis:
+docker run -p 6379:6379 --name some-redis -d redis
+
+# 2 - Test Redis:
+# With Docker:
+docker exec -it some-redis redis-cli ping
+
+# OUTPUT: PONG
