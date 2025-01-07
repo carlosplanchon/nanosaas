@@ -59,6 +59,11 @@ I built this system in just three days with almost no prior knowledge of web des
         DB_NAME = "your_database_name"
         DB_USERNAME = "your_db_username"
         DB_PASSWORD = "your_db_password"
+
+        [celery]
+        # Local Redis:
+        broker="redis://127.0.0.1:6379/0"
+        backend="redis://127.0.0.1:6379/0"
         ```
     - Replace placeholders with your actual values.
 

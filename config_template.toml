@@ -13,3 +13,7 @@ DB_PORT = "..."  # Use an integer here.
 DB_NAME = "..."
 DB_USERNAME = "..."
 DB_PASSWORD = "..."
+
+[celery]
+broker="..."
+backend="..."

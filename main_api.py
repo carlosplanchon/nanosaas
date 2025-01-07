@@ -335,8 +335,8 @@ async def divide(
         task = celery_task_divide.delay(x, y, user.id)
 
         # Deduct a credit
-        account.credits -= 1
-        await account.save()
+        # account.credits -= 1
+        # await account.save()
 
         # Save the task in history
         await TaskHistory.create(
@@ -381,8 +381,8 @@ async def divide_with_api_key(x: int, y: int, api_key: str):
         task = celery_task_divide.delay(x, y, account.id)
 
         # Deduct a credit
-        account.credits -= 1
-        await account.save()
+        # account.credits -= 1
+        # await account.save()
 
         # Save the task in history
         await TaskHistory.create(
