@@ -15,7 +15,7 @@ class Account(Model):
     picture = fields.CharField(max_length=255)
     provider = fields.CharField(max_length=50)
     created_at = fields.DatetimeField(auto_now_add=True)
-    credits = fields.IntField(default=5)  # Start users with 5 credits
+    credits = fields.IntField(default=25)  # Start users with 5 credits
     api_key = fields.CharField(max_length=255, null=True)
 
     def __str__(self):
