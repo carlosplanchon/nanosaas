@@ -482,7 +482,8 @@ async def render_task_details_page(
             "task_details.html",
             {
                 "request": request,
-                "task_id": task.task_id
+                "task_id": task.task_id,
+                "root_prefix": root_prefix
             }
         )
 
