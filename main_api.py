@@ -62,7 +62,7 @@ app = FastAPI(
 
 
 # Mount static files directory
-app.mount("/static", StaticFiles(
+app.mount("/web/static", StaticFiles(
         directory="web/static"
     ),
     name="static"
