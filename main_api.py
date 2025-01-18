@@ -25,6 +25,8 @@ from fastapi.templating import Jinja2Templates
 
 from tortoise.contrib.fastapi import register_tortoise
 
+from fastapi.staticfiles import StaticFiles
+
 from pydantic import BaseModel
 
 from celery.result import AsyncResult
@@ -45,9 +47,25 @@ from shared import DB_URL
 templates = Jinja2Templates(directory="web/templates")
 
 
+root_path: str = "nanosaas"
+
+if root_path != "":
+    root_prefix = f"/{root_path}"
+else:
+    root_prefix = ""
+
+
 app = FastAPI(
-    root_path="/",
-    title=""
+    root_path=f"/{root_path}",
+    title="NanoSaaS"
+)
+
+
+# Mount static files directory
+app.mount("/static", StaticFiles(
+        directory="web/static"
+    ),
+    name="static"
 )
 
 
@@ -93,7 +111,6 @@ class TaskInitOut(BaseModel):
 #      --- LOGIN ---      #
 #                         #
 ###########################
-
 def generate_api_key():
     return secrets.token_hex(32)  # Generates a 64-character API key
 
@@ -124,7 +141,12 @@ async def get_logged_user(
 @app.get("/", include_in_schema=False)
 async def home(request: Request):
     """Render the login page."""
-    return templates.TemplateResponse("login.html", {"request": request})
+    return templates.TemplateResponse(
+        "login.html", {
+                "request": request,
+                "root_prefix": root_prefix
+            }
+        )
 
 
 @app.get("/thankyou", response_class=HTMLResponse)
@@ -132,7 +154,8 @@ async def thankyou(request: Request):
     """Forget the user's session and return an HTML response."""
     response = templates.TemplateResponse(
         "thankyou.html", {
-            "request": request
+            "request": request,
+            "root_prefix": root_prefix
         }
     )
     return response
@@ -148,7 +171,7 @@ async def login():
 @app.get("/auth/logout", response_class=HTMLResponse)
 async def logout(request: Request):
     """Forget the user's session and return an HTML response."""
-    response = RedirectResponse(url="/thankyou")
+    response = RedirectResponse(url=f"{root_prefix}/thankyou")
     response.delete_cookie(key="token")
     return response
 
@@ -190,7 +213,7 @@ async def login_callback(request: Request):
         key=JWT_SIGNING_SECRET_KEY,
         algorithm="HS256"
     )
-    response = RedirectResponse(url="/userpanel")
+    response = RedirectResponse(url=f"{root_prefix}/userpanel")
     response.set_cookie(key="token", value=token, expires=expiration)
     return response
 
@@ -297,7 +320,7 @@ async def api_key_page(
         "api_key_page.html",
         {
             "request": request,
-            "user": user
+            "root_prefix": root_prefix
         }
     )
 
@@ -312,7 +335,12 @@ async def serve_page(
     request: Request,
     user: OpenID = Depends(get_logged_user)
         ):
-    return templates.TemplateResponse("user_panel.html", {"request": request})
+    return templates.TemplateResponse(
+        "user_panel.html", {
+            "request": request,
+            "root_prefix": root_prefix
+        }
+    )
 
 
 ###########################
@@ -592,4 +620,4 @@ register_tortoise(
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=31117)
+    uvicorn.run(app, host="127.0.0.1", port=51337)

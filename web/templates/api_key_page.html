@@ -46,7 +46,7 @@
         // Fetch current API key on page load
         async function fetchApiKey() {
             try {
-                const response = await fetch('/user/api_key', {
+                const response = await fetch('{{ root_prefix }}/user/api_key', {
                     method: 'GET',
                     credentials: 'include'
                 });
@@ -69,7 +69,7 @@
             errorMessage.classList.add('hidden');
 
             try {
-                const response = await fetch('/user/api_key', {
+                const response = await fetch('{{ root_prefix }}/user/api_key', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'

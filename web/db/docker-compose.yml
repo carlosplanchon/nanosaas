@@ -2,10 +2,10 @@ services:
   postgres:
     image: postgres:17-alpine
     ports:
-      - 5432:5432
+      - 5500:5432
     volumes:
-      - ~/apps/postgres:/var/lib/postgresql/data
+      - ~/apps/postgres_nanosaas:/var/lib/postgresql/data
     environment:
       - POSTGRES_PASSWORD=password
       - POSTGRES_USER=username
-      - POSTGRES_DB=databasename
+      - POSTGRES_DB=nanosaas

@@ -1,0 +1,5 @@
+fastapi
+uvicorn
+
+# Single sign-on:
+fastapi_sso

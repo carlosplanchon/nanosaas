@@ -13,12 +13,12 @@
         <div class="flex justify-between items-center mb-8">
             <h1 class="text-3xl font-bold text-gray-700">User Panel</h1>
             <div class="flex gap-4">
-                <a href="/user/api_key_page">
+                <a href="{{ root_prefix }}/user/api_key_page">
                     <button class="bg-green-500 hover:bg-green-600 text-white font-semibold py-2 px-4 rounded-md">
                         API Key Management
                     </button>
                 </a>
-                <a href="/auth/logout">
+                <a href="{{ root_prefix }}/auth/logout">
                     <button class="bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded-md">
                         Logout
                     </button>
@@ -27,7 +27,7 @@
         </div>
 
         <!-- Alpine.js interactive scope -->
-        <div x-data="taskManager()" class="bg-white p-6 rounded-lg shadow-md">
+        <div x-data="taskManager()" class="inline-block bg-white p-6 rounded-lg shadow-md">
             <div class="mb-6 text-center">
                 <span class="text-gray-700 font-semibold">Remaining Credits: </span>
                 <span x-text="credits" class="text-blue-500 font-bold"></span>
@@ -72,7 +72,7 @@
                                 <td class="border p-2 text-center" x-text="JSON.stringify(task.result, null, 2)"></td>
                                 <td class="border p-2 text-center" x-text="task.created_at"></td>
                                 <td class="border p-2 text-center">
-                                    <a :href="`/task_details/${task.task_id}`" class="text-blue-500 hover:underline">View Details</a>
+                                    <a :href="`{{ root_prefix }}/task_details/${task.task_id}`" class="text-blue-500 hover:underline">View Details</a>
                                 </td>
                             </tr>
                         </template>
@@ -102,7 +102,7 @@
 
                 async fetchCredits() {
                     try {
-                        const response = await fetch('/user/credits');
+                        const response = await fetch('{{ root_prefix }}/user/credits');
                         if (response.ok) {
                             const data = await response.json();
                             this.credits = data.credits;
@@ -118,7 +118,7 @@
 
                 async fetchTaskHistory() {
                     try {
-                        const response = await fetch('/user/task_history');
+                        const response = await fetch('{{ root_prefix }}/user/task_history');
                         if (response.ok) {
                             const data = await response.json();
                             this.tasks = data.map(task => ({
@@ -136,7 +136,7 @@
                 async startTask() {
                     try {
                         const { x, y } = this.newTask;
-                        const response = await fetch(`/task/divide/${x}/${y}`);
+                        const response = await fetch(`{{ root_prefix }}/task/divide/${x}/${y}`);
                         
                         if (response.ok) {
                             const data = await response.json();
