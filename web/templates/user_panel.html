@@ -27,10 +27,15 @@
         </div>
 
         <!-- Alpine.js interactive scope -->
-        <div x-data="taskManager()" class="inline-block bg-white p-6 rounded-lg shadow-md">
+        <div x-data="taskManager()" class="bg-white p-6 rounded-lg shadow-md w-full mx-auto">
             <div class="mb-6 text-center">
                 <span class="text-gray-700 font-semibold">Remaining Credits: </span>
                 <span x-text="credits" class="text-blue-500 font-bold"></span>
+            </div>
+
+            <!-- Info Box -->
+            <div class="bg-blue-100 border border-blue-300 text-blue-700 p-4 rounded-md mb-6">
+                <p>This tool performs a division operation using the <code>divide(x, y)</code> function. Provide two numbers, and the system will calculate the result of dividing <code>x</code> by <code>y</code>.</p>
             </div>
 
             <!-- Task Input -->
