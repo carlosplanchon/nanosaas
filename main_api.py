@@ -47,7 +47,7 @@ from shared import DB_URL
 templates = Jinja2Templates(directory="web/templates")
 
 
-root_path: str = ""
+root_path: str = CONFIG["app"]["ROOT_PATH"]
 
 if root_path != "":
     root_prefix = f"/{root_path}"
