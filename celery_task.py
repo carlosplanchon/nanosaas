@@ -54,7 +54,7 @@ async def run_divide(self, x, y, user_id):
         }
 
     #
-    #  --> Sucessful Scrape:
+    #  --> Sucessful run (without any exceptions):
     #
     # Fetch the user account and deduct credits asynchronously
     try:
