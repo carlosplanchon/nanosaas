@@ -16,6 +16,8 @@ I built this system in just three days with almost no prior knowledge of web des
 - **Modern UI**: Responsive frontend with Alpine.js and Tailwind CSS.
 - **Scalable Architecture**: Built with FastAPI and Docker-ready.
 
+### DeepWiki Docs: [https://deepwiki.com/carlosplanchon/nanosaas](https://deepwiki.com/carlosplanchon/nanosaas)
+
 ---
 
 ## Tech Stack
