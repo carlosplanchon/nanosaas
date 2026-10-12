@@ -2,6 +2,7 @@
 
 from tortoise.models import Model
 from tortoise import fields
+from tortoise.expressions import F
 
 
 # Define Account Model using TortoiseORM
@@ -20,6 +21,26 @@ class Account(Model):
 
     def __str__(self):
         return self.display_name
+
+    @classmethod
+    async def reserve_credit(cls, google_id: str) -> bool:
+        """
+        Take one credit in a single UPDATE, so concurrent requests
+        can't spend more credits than the account has.
+        Returns False if there were no credits left.
+        """
+        updated = await cls.filter(
+            google_id=google_id,
+            credits__gte=1
+        ).update(credits=F("credits") - 1)
+        return updated == 1
+
+    @classmethod
+    async def refund_credit(cls, google_id: str) -> None:
+        """Give back a credit taken with reserve_credit()."""
+        await cls.filter(google_id=google_id).update(
+            credits=F("credits") + 1
+        )
 
 
 class TaskHistory(Model):

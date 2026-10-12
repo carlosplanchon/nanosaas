@@ -24,6 +24,7 @@ from jose import jwt
 from fastapi.templating import Jinja2Templates
 
 from tortoise.contrib.fastapi import register_tortoise
+from tortoise.exceptions import DoesNotExist
 
 from fastapi.staticfiles import StaticFiles
 
@@ -303,7 +304,9 @@ async def create_or_regenerate_api_key(
     # Generate a new API key
     new_api_key = generate_api_key()
     account.api_key = new_api_key
-    await account.save()
+    # Save only this field: a full save would also write back the
+    # credits read above, undoing any credit reserved meanwhile.
+    await account.save(update_fields=["api_key"])
 
     return {"api_key": new_api_key}
 
@@ -348,23 +351,22 @@ async def serve_page(
 #      --- TASKS ---      #
 #                         #
 ###########################
-@app.get("/task/divide/{x}/{y}", response_model=TaskInitOut)
-async def divide(
-    x: int,
-    y: int,
-    user: OpenID = Depends(get_logged_user)
-        ):
-    account = await Account.get(google_id=user.id)
-    if account.credits < 1:
+async def start_divide_task(account: Account, x: int, y: int) -> TaskInitOut:
+    """
+    Reserve a credit, start the Celery task and save it in history.
+    Shared by the cookie and the API key endpoints.
+
+    The credit is taken before queueing, so pending tasks can never
+    add up to more than the account's credits. The worker gives it
+    back if the task fails, so only successful runs are charged.
+    """
+    if not await Account.reserve_credit(account.google_id):
         raise HTTPException(status_code=403, detail="Not enough credits")
 
+    task = None
     try:
         # Start the Celery task
-        task = celery_task_divide.delay(x, y, user.id)
-
-        # Deduct a credit
-        # account.credits -= 1
-        # await account.save()
+        task = celery_task_divide.delay(x, y, account.google_id)
 
         # Save the task in history
         await TaskHistory.create(
@@ -377,10 +379,24 @@ async def divide(
 
         return TaskInitOut(id=task.id, message="Task started successfully")
     except Exception as e:
+        if task is None:
+            # The task never reached the queue: give the credit back.
+            await Account.refund_credit(account.google_id)
+
         raise HTTPException(
             status_code=500,
             detail=f"Task initiation failed: {e}"
         )
+
+
+@app.get("/task/divide/{x}/{y}", response_model=TaskInitOut)
+async def divide(
+    x: int,
+    y: int,
+    user: OpenID = Depends(get_logged_user)
+        ):
+    account = await Account.get(google_id=user.id)
+    return await start_divide_task(account, x, y)
 
 
 @app.get("/api/task/divide/{x}/{y}", response_model=TaskInitOut)
@@ -401,32 +417,7 @@ async def divide_with_api_key(x: int, y: int, api_key: str):
     if not account:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
-    if account.credits < 1:
-        raise HTTPException(status_code=403, detail="Not enough credits")
-
-    try:
-        # Start the Celery task
-        task = celery_task_divide.delay(x, y, account.id)
-
-        # Deduct a credit
-        # account.credits -= 1
-        # await account.save()
-
-        # Save the task in history
-        await TaskHistory.create(
-            user=account,
-            task_id=task.id,
-            task_type="divide",
-            parameters={"x": x, "y": y},
-            status="PENDING"
-        )
-
-        return TaskInitOut(id=task.id, message="Task started successfully")
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Task initiation failed: {e}"
-        )
+    return await start_divide_task(account, x, y)
 
 
 @app.get("/task/status/{task_id}", response_model=TaskOut)
@@ -450,7 +441,7 @@ async def get_status(task_id: str, user: OpenID = Depends(get_logged_user)):
         await task_history.save()
 
         return TaskOut(id=task_id, status=task_history.status)
-    except TaskHistory.DoesNotExist:
+    except DoesNotExist:
         raise HTTPException(
             status_code=404,
             detail="Task not found or you do not have permission to access it"
@@ -487,7 +478,7 @@ async def render_task_details_page(
             }
         )
 
-    except TaskHistory.DoesNotExist:
+    except DoesNotExist:
         raise HTTPException(
             status_code=404,
             detail="Task not found or you do not have permission to access it"
@@ -536,7 +527,7 @@ async def get_task_details_json_from_user(
             }
         )
 
-    except TaskHistory.DoesNotExist:
+    except DoesNotExist:
         raise HTTPException(
             status_code=404,
             detail="Task not found or you do not have permission to access it"
@@ -596,6 +587,9 @@ async def get_task_details_json(task_id: str, api_key: str):
             }
         )
 
+    except HTTPException:
+        # Let the 401/404 above through instead of turning them into a 500.
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=500,
