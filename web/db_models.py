@@ -22,7 +22,8 @@ class Account(Model):
     provider = fields.CharField(max_length=50)
     created_at = fields.DatetimeField(auto_now_add=True)
     credits = fields.IntField(default=25)  # Start users with 25 credits
-    api_key = fields.CharField(max_length=255, null=True)
+    # Unique: a key identifies one account, and lookups by key use its index.
+    api_key = fields.CharField(max_length=255, null=True, unique=True)
 
     def __str__(self):
         return self.display_name

@@ -101,7 +101,8 @@ class Process:
 
     def __init__(self, args, config, log, is_ready, timeout=60):
         self.log = log
-        env = {**os.environ, "NANOSAAS_CONFIG": str(config)}
+        # Unbuffered, so the logs are complete when a test reads them.
+        env = {**os.environ, "NANOSAAS_CONFIG": str(config), "PYTHONUNBUFFERED": "1"}
         with log.open("w") as out:
             # Its own session, so stop() also reaches the worker's pool.
             self.proc = subprocess.Popen(

@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 
 # this is the part that puts the lock icon to the docs
 from fastapi.security import APIKeyCookie
+from fastapi.security import APIKeyHeader, APIKeyQuery
 
 # pip install fastapi-sso
 from fastapi_sso.sso.google import GoogleSSO
@@ -167,6 +168,24 @@ async def redirect_to_login(request: Request, exc: LoginRequired):
     return RedirectResponse(url=f"{root_prefix}/")
 
 
+# The API key goes in the X-API-Key header. The api_key query parameter
+# still works for older clients, but URLs end up in server and proxy logs.
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+api_key_query = APIKeyQuery(name="api_key", auto_error=False)
+
+
+async def get_api_key_account(
+    header_key: str | None = Security(api_key_header),
+    query_key: str | None = Security(api_key_query)
+        ) -> Account:
+    """Get the account of the API key, from the header or the query."""
+    api_key = header_key or query_key
+    account = await Account.get_or_none(api_key=api_key) if api_key else None
+    if not account:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    return account
+
+
 @app.get("/", include_in_schema=False)
 async def home(request: Request):
     """Render the login page."""
@@ -263,20 +282,15 @@ async def check_credits(user: OpenID = Depends(get_logged_user)):
 
 
 @app.get("/api/user_credits", response_model=dict)
-async def get_user_credits_with_key(api_key: str):
+async def get_user_credits_with_key(
+    account: Account = Depends(get_api_key_account)
+        ):
     """
     Get the user's remaining credits using an API key.
-
-    Args:
-        api_key (str): User's API key for authentication.
 
     Returns:
         dict: The number of remaining credits.
     """
-    account = await Account.get_or_none(api_key=api_key)
-    if not account:
-        raise HTTPException(status_code=401, detail="Invalid API key")
-
     return {"credits": account.credits}
 
 
@@ -452,23 +466,21 @@ async def divide(
 
 
 @app.get("/api/task/divide/{x}/{y}", response_model=TaskInitOut)
-async def divide_with_api_key(x: int, y: int, api_key: str):
+async def divide_with_api_key(
+    x: int,
+    y: int,
+    account: Account = Depends(get_api_key_account)
+        ):
     """
     Endpoint for initiating a division task using an API key.
 
     Args:
         x (int): Dividend.
         y (int): Divisor.
-        api_key (str): User's API key for authentication.
 
     Returns:
         TaskInitOut: Details about the initiated task.
     """
-    # Validate API key
-    account = await Account.get_or_none(api_key=api_key)
-    if not account:
-        raise HTTPException(status_code=401, detail="Invalid API key")
-
     return await start_divide_task(account, x, y)
 
 
@@ -579,23 +591,20 @@ async def get_task_details_json_from_user(
 
 
 @app.get("/api/task_details/{task_id}", response_class=JSONResponse)
-async def get_task_details_json(task_id: str, api_key: str):
+async def get_task_details_json(
+    task_id: str,
+    account: Account = Depends(get_api_key_account)
+        ):
     """
     Fetch task details from the database using an API key and return them as JSON.
 
     Args:
         task_id (str): The ID of the task to retrieve.
-        api_key (str): User's API key for authentication.
 
     Returns:
         JSONResponse: Task details in JSON format.
     """
     try:
-        # Validate API key
-        account = await Account.get_or_none(api_key=api_key)
-        if not account:
-            raise HTTPException(status_code=401, detail="Invalid API key")
-
         # Fetch the task and ensure it belongs to the account associated with the API key
         task = await TaskHistory.get_or_none(task_id=task_id, user=account)
         if not task:
@@ -620,7 +629,7 @@ async def get_task_details_json(task_id: str, api_key: str):
         )
 
     except HTTPException:
-        # Let the 401/404 above through instead of turning them into a 500.
+        # Let the 404 above through instead of turning it into a 500.
         raise
     except Exception as e:
         raise HTTPException(

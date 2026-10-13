@@ -108,8 +108,15 @@ Run both commands from the repository root: `config.toml`, the templates and the
 
    ![User Panel](docs/user_panel.png)
 
-4. Each user starts with a predefined number of credits (25 by default, set in `web/db_models.py`). A credit is reserved when a task is queued and given back if the task fails, so only successful tasks are charged. If credits run out, the user will need to wait or request more credits.
-5. Customize your tasks by modifying the `celery_task.py` file. For example, the included `divide` task simulates a long-running operation in `run_divide()`:
+4. Use the API with the key from the *API Key Management* page, sent in the `X-API-Key` header:
+    ```bash
+    curl -H "X-API-Key: your_api_key" http://127.0.0.1:8000/api/user_credits
+    curl -H "X-API-Key: your_api_key" http://127.0.0.1:8000/api/task/divide/10/4
+    curl -H "X-API-Key: your_api_key" http://127.0.0.1:8000/api/task_details/your_task_id
+    ```
+   The `api_key` query parameter still works for older clients, but avoid it: URLs end up in server and proxy logs. The interactive docs at `/docs` list every route.
+5. Each user starts with a predefined number of credits (25 by default, set in `web/db_models.py`). A credit is reserved when a task is queued and given back if the task fails, so only successful tasks are charged. If credits run out, the user will need to wait or request more credits.
+6. Customize your tasks by modifying the `celery_task.py` file. For example, the included `divide` task simulates a long-running operation in `run_divide()`:
     ```python
     async def run_divide(self, x, y, user_id):
         await init_db()
@@ -141,6 +148,10 @@ Run both commands from the repository root: `config.toml`, the templates and the
     - Use **Flower** for Celery monitoring: install it with `pip install flower`, then run `celery -A celery_task flower --port=5555`.
     - Use the Celery TUI monitor: `celery -A celery_task events`.
 - The database tables are created automatically when the backend starts (`generate_schemas=True` in `main_api.py`). For migrations, `shared.py` already has a `TORTOISE_ORM` config for **Aerich** (`pip install aerich`).
+- `generate_schemas` only creates missing tables, so a database created before API keys became unique doesn't get their index. Add it by hand:
+    ```sql
+    ALTER TABLE account ADD CONSTRAINT account_api_key_key UNIQUE (api_key);
+    ```
 
 ---
 
