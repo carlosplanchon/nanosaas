@@ -3,9 +3,9 @@
 # to calculate expiration of the JWT
 import datetime
 
-import json
-
 import secrets
+
+import uuid
 
 from fastapi import FastAPI, Depends, HTTPException, Security, Request
 
@@ -354,79 +354,69 @@ async def serve_page(
 ###########################
 async def start_divide_task(account: Account, x: int, y: int) -> TaskInitOut:
     """
-    Reserve a credit, start the Celery task and save it in history.
+    Reserve a credit, save the task in history and start it in Celery.
     Shared by the cookie and the API key endpoints.
 
     The credit is taken before queueing, so pending tasks can never
-    add up to more than the account's credits. The worker gives it
-    back if the task fails, so only successful runs are charged.
+    add up to more than the account's credits. It is given back if
+    the task fails, so only successful runs are charged.
     """
     if not await Account.reserve_credit(account.google_id):
         raise HTTPException(status_code=403, detail="Not enough credits")
 
-    task = None
+    task_id = str(uuid.uuid4())
     try:
-        # Start the Celery task
-        task = celery_task_divide.delay(x, y, account.google_id)
-
-        # Save the task in history
+        # Save the task in history before queueing it, so the worker
+        # always finds its row when it saves the result.
         await TaskHistory.create(
             user=account,
-            task_id=task.id,
+            task_id=task_id,
             task_type="divide",
             parameters={"x": x, "y": y},
             status="PENDING"
         )
 
-        return TaskInitOut(id=task.id, message="Task started successfully")
+        # Start the Celery task
+        celery_task_divide.apply_async(
+            (x, y, account.google_id),
+            task_id=task_id
+        )
     except Exception as e:
-        if task is None:
-            # The task never reached the queue: give the credit back.
-            await Account.refund_credit(account.google_id)
+        # The task never reached the queue: drop its row and give the
+        # credit back.
+        await TaskHistory.filter(task_id=task_id).delete()
+        await Account.refund_credit(account.google_id)
 
         raise HTTPException(
             status_code=500,
             detail=f"Task initiation failed: {e}"
         )
 
+    return TaskInitOut(id=task_id, message="Task started successfully")
+
 
 async def refresh_task(task_row: TaskHistory) -> None:
     """
-    Update a task's status and result from Celery until it finishes.
+    Update an unfinished task from Celery.
 
-    Finished tasks are left alone: Celery forgets results after a day
-    and then reports the task as PENDING, which would undo them.
+    The worker saves each task when it ends. This covers the ones it
+    couldn't save (for example, with the database down), as long as
+    Celery still has their result: it forgets results after a day.
     """
     if task_row.status in states.READY_STATES:
         return
 
     result = AsyncResult(task_row.task_id)
-    task_row.status = result.status
 
-    if not result.ready():
-        await task_row.save(update_fields=["status"])
-        return
-
-    if result.successful():
-        value = result.result
+    if result.ready():
+        await TaskHistory.finish(task_row.task_id, result.status, result.result)
     else:
-        # A failed or revoked task's result is an exception. Keep only
-        # its type: the message may expose details of the servers.
-        value = {
-            "status": "error",
-            "message": "The task failed",
-            "error": type(result.result).__name__,
-        }
+        # Only while unfinished: the worker may have just saved it.
+        await TaskHistory.filter(id=task_row.id).exclude(
+            status__in=states.READY_STATES
+        ).update(status=result.status)
 
-    # Encode it here: the JSON field can't store the datetimes, Decimals
-    # and UUIDs that Celery decodes back into objects, and it takes any
-    # str as JSON that is already encoded.
-    encoded = json.dumps(value, default=str)
-    await TaskHistory.filter(id=task_row.id).update(
-        status=task_row.status,
-        result=encoded
-    )
-    task_row.result = json.loads(encoded)
+    await task_row.refresh_from_db(fields=["status", "result"])
 
 
 # POST because it spends a credit: the SameSite=lax cookie still goes

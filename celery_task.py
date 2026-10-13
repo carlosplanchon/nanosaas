@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 
 from celery import Celery
+from celery import states
+from celery.signals import task_postrun
 from shared import CONFIG
 
 from tortoise import Tortoise
-from web.db_models import Account
+from web.db_models import Account, TaskHistory
 from shared import DB_URL
 
+import asyncio
 import time
 
 
@@ -32,7 +35,6 @@ async def init_db():
 # Define the Celery task properly handling async code
 @celery_app.task(bind=True)
 def divide(self, x, y, user_id):
-    import asyncio
     # Capture the result of the async function
     result = asyncio.run(run_divide(self, x, y, user_id))
     return result  # Return result properly to Celery
@@ -58,3 +60,23 @@ async def run_divide(self, x, y, user_id):
         await Tortoise.close_connections()
 
     return result
+
+
+@task_postrun.connect
+def save_finished_task(task_id=None, state=None, retval=None, **kwargs):
+    """
+    Save every task in its history row as soon as it ends, instead of
+    waiting for someone to check it before Celery forgets the result
+    (after a day). Failed tasks get their credit back.
+    """
+    if state in states.READY_STATES:
+        asyncio.run(save_task(task_id, state, retval))
+
+
+async def save_task(task_id, state, retval):
+    await init_db()
+
+    try:
+        await TaskHistory.finish(task_id, state, retval)
+    finally:
+        await Tortoise.close_connections()

@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 
+import json
+
+from celery import states
+
 from tortoise.models import Model
 from tortoise import fields
 from tortoise.expressions import F
+from tortoise.transactions import in_transaction
 
 
 # Define Account Model using TortoiseORM
@@ -58,3 +63,42 @@ class TaskHistory(Model):
 
     def __str__(self):
         return f"{self.task_type} - {self.task_id}"
+
+    @classmethod
+    async def finish(cls, task_id: str, state: str, result) -> bool:
+        """
+        Save a task's final Celery state and result, only the first time.
+
+        The worker calls this when a task ends, and the API when it finds
+        a finished task the worker couldn't save. The update only matches
+        unfinished rows, so a failed task's credit is given back once.
+        Returns False if the task has no row or was already finished.
+        """
+        if state not in states.READY_STATES:
+            return False
+
+        if state != states.SUCCESS:
+            # A failed or revoked task's result is an exception. Keep only
+            # its type: the message may expose details of the servers.
+            result = {
+                "status": "error",
+                "message": "The task failed",
+                "error": type(result).__name__,
+            }
+
+        # Encode it here: the JSON field can't store the datetimes, Decimals
+        # and UUIDs that Celery decodes back into objects, and it takes any
+        # str as JSON that is already encoded.
+        encoded = json.dumps(result, default=str)
+
+        async with in_transaction():
+            updated = await cls.filter(task_id=task_id).exclude(
+                status__in=states.READY_STATES
+            ).update(status=state, result=encoded)
+
+            if updated and state != states.SUCCESS:
+                # Only successful tasks are charged.
+                task = await cls.get(task_id=task_id).prefetch_related("user")
+                await Account.refund_credit(task.user.google_id)
+
+        return updated == 1
