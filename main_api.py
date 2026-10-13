@@ -3,6 +3,8 @@
 # to calculate expiration of the JWT
 import datetime
 
+import json
+
 import secrets
 
 from fastapi import FastAPI, Depends, HTTPException, Security, Request
@@ -30,6 +32,7 @@ from fastapi.staticfiles import StaticFiles
 
 from pydantic import BaseModel
 
+from celery import states
 from celery.result import AsyncResult
 
 from celery_task import divide as celery_task_divide
@@ -264,19 +267,10 @@ async def task_history(user: OpenID = Depends(get_logged_user)):
     history = await TaskHistory.filter(user=account).order_by("-created_at")
 
     for task_row in history:
-        if task_row.status in ["PENDING", "STARTED"]:
-            try:
-                # Get the Celery task status and result
-                result = AsyncResult(task_row.task_id)
-                status = result.status
-                task_row.status = status
-
-                if result.ready():
-                    task_row.result = result.result
-
-                await task_row.save()
-            except Exception as e:
-                print(f"Error updating task {task_row.task_id}: {e}")
+        try:
+            await refresh_task(task_row)
+        except Exception as e:
+            print(f"Error updating task {task_row.task_id}: {e}")
 
     # Refresh history after updates
     history = await TaskHistory.filter(user=account).order_by("-created_at")
@@ -396,6 +390,45 @@ async def start_divide_task(account: Account, x: int, y: int) -> TaskInitOut:
         )
 
 
+async def refresh_task(task_row: TaskHistory) -> None:
+    """
+    Update a task's status and result from Celery until it finishes.
+
+    Finished tasks are left alone: Celery forgets results after a day
+    and then reports the task as PENDING, which would undo them.
+    """
+    if task_row.status in states.READY_STATES:
+        return
+
+    result = AsyncResult(task_row.task_id)
+    task_row.status = result.status
+
+    if not result.ready():
+        await task_row.save(update_fields=["status"])
+        return
+
+    if result.successful():
+        value = result.result
+    else:
+        # A failed or revoked task's result is an exception. Keep only
+        # its type: the message may expose details of the servers.
+        value = {
+            "status": "error",
+            "message": "The task failed",
+            "error": type(result.result).__name__,
+        }
+
+    # Encode it here: the JSON field can't store the datetimes, Decimals
+    # and UUIDs that Celery decodes back into objects, and it takes any
+    # str as JSON that is already encoded.
+    encoded = json.dumps(value, default=str)
+    await TaskHistory.filter(id=task_row.id).update(
+        status=task_row.status,
+        result=encoded
+    )
+    task_row.result = json.loads(encoded)
+
+
 # POST because it spends a credit: the SameSite=lax cookie still goes
 # with GET navigations from other sites, so a link could trigger it.
 @app.post("/task/divide/{x}/{y}", response_model=TaskInitOut)
@@ -441,13 +474,7 @@ async def get_status(task_id: str, user: OpenID = Depends(get_logged_user)):
         )
 
         # Update the task status and result
-        result = AsyncResult(task_id)
-        task_history.status = result.status
-
-        if result.ready():
-            task_history.result = result.result
-
-        await task_history.save()
+        await refresh_task(task_history)
 
         return TaskOut(id=task_id, status=task_history.status)
     except DoesNotExist:
@@ -515,14 +542,7 @@ async def get_task_details_json_from_user(
         )
 
         # Ensure the task's status and result are up-to-date
-        if task.status in ["PENDING", "STARTED"]:
-            result = AsyncResult(task.task_id)
-            task.status = result.status
-
-            if result.ready():
-                task.result = result.result
-
-            await task.save()
+        await refresh_task(task)
 
         # Return task details as JSON
         return JSONResponse(
@@ -575,14 +595,7 @@ async def get_task_details_json(task_id: str, api_key: str):
             )
 
         # Ensure the task's status and result are up-to-date
-        if task.status in ["PENDING", "STARTED"]:
-            result = AsyncResult(task.task_id)
-            task.status = result.status
-
-            if result.ready():
-                task.result = result.result
-
-            await task.save()
+        await refresh_task(task)
 
         # Return task details as JSON
         return JSONResponse(
