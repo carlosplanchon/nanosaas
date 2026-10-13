@@ -76,6 +76,11 @@ GOOGLE_CLIENT_ID = CONFIG["api"]["GOOGLE_CLIENT_ID"]
 GOOGLE_CLIENT_SECRET = CONFIG["api"]["GOOGLE_CLIENT_SECRET"]
 GOOGLE_REDIRECT_URI = CONFIG["api"]["GOOGLE_REDIRECT_URI"]
 
+# Session cookie flags: HttpOnly hides the JWT from page scripts, Secure
+# sends it only over HTTPS (or http://localhost, except in Safari) and
+# SameSite=lax keeps it out of POSTs coming from other sites.
+SESSION_COOKIE_FLAGS = {"httponly": True, "secure": True, "samesite": "lax"}
+
 
 google_sso = GoogleSSO(
     GOOGLE_CLIENT_ID,
@@ -171,7 +176,7 @@ async def login():
 async def logout(request: Request):
     """Forget the user's session and return an HTML response."""
     response = RedirectResponse(url=f"{root_prefix}/thankyou")
-    response.delete_cookie(key="token")
+    response.delete_cookie(key="token", **SESSION_COOKIE_FLAGS)
     return response
 
 
@@ -213,7 +218,12 @@ async def login_callback(request: Request):
         algorithm="HS256"
     )
     response = RedirectResponse(url=f"{root_prefix}/userpanel")
-    response.set_cookie(key="token", value=token, expires=expiration)
+    response.set_cookie(
+        key="token",
+        value=token,
+        expires=expiration,
+        **SESSION_COOKIE_FLAGS
+    )
     return response
 
 
@@ -386,7 +396,9 @@ async def start_divide_task(account: Account, x: int, y: int) -> TaskInitOut:
         )
 
 
-@app.get("/task/divide/{x}/{y}", response_model=TaskInitOut)
+# POST because it spends a credit: the SameSite=lax cookie still goes
+# with GET navigations from other sites, so a link could trigger it.
+@app.post("/task/divide/{x}/{y}", response_model=TaskInitOut)
 async def divide(
     x: int,
     y: int,

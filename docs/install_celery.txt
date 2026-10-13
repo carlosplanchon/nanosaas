@@ -19,7 +19,7 @@ task = divide.delay(1, 3)
 #########################################
 
 # Install Redis:
-docker run -p 6379:6379 --name some-redis -d redis
+docker run -p 127.0.0.1:6379:6379 --name some-redis -d redis
 
 # 2 - Test Redis:
 # With Docker:

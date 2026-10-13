@@ -2,7 +2,8 @@ services:
   postgres:
     image: postgres:17-alpine
     ports:
-      - 5500:5432
+      # Only reachable from this machine: Docker-published ports skip firewalls like ufw.
+      - 127.0.0.1:5500:5432
     volumes:
       - ~/apps/postgres_nanosaas:/var/lib/postgresql/data
     environment:

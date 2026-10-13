@@ -141,7 +141,9 @@
                 async startTask() {
                     try {
                         const { x, y } = this.newTask;
-                        const response = await fetch(`{{ root_prefix }}/task/divide/${x}/${y}`);
+                        const response = await fetch(`{{ root_prefix }}/task/divide/${x}/${y}`, {
+                            method: 'POST'
+                        });
                         
                         if (response.ok) {
                             const data = await response.json();

@@ -81,7 +81,7 @@ Requires Python 3.11 or newer.
 
 4. Run the services:
     - **PostgreSQL**: Make sure PostgreSQL is running and configured. The tables are created automatically when the backend starts.
-    - **Redis**: Start Redis (e.g., using Docker: `docker run -p 6379:6379 redis`).
+    - **Redis**: Start Redis (e.g., using Docker: `docker run -p 127.0.0.1:6379:6379 redis`). Binding the port to `127.0.0.1` keeps Redis reachable only from this machine: ports published by Docker skip firewalls like ufw.
 
 5. Start the backend:
     ```bash
