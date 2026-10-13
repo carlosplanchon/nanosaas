@@ -57,7 +57,7 @@ else:
 
 
 app = FastAPI(
-    root_path=f"/{root_path}",
+    root_path=root_prefix,
     title="NanoSaaS"
 )
 
@@ -143,8 +143,7 @@ async def get_logged_user(
 async def home(request: Request):
     """Render the login page."""
     return templates.TemplateResponse(
-        "login.html", {
-                "request": request,
+        request, "login.html", {
                 "root_prefix": root_prefix
             }
         )
@@ -154,8 +153,7 @@ async def home(request: Request):
 async def thankyou(request: Request):
     """Forget the user's session and return an HTML response."""
     response = templates.TemplateResponse(
-        "thankyou.html", {
-            "request": request,
+        request, "thankyou.html", {
             "root_prefix": root_prefix
         }
     )
@@ -320,9 +318,9 @@ async def api_key_page(
     Serve the API key management page.
     """
     return templates.TemplateResponse(
+        request,
         "api_key_page.html",
         {
-            "request": request,
             "root_prefix": root_prefix
         }
     )
@@ -339,8 +337,7 @@ async def serve_page(
     user: OpenID = Depends(get_logged_user)
         ):
     return templates.TemplateResponse(
-        "user_panel.html", {
-            "request": request,
+        request, "user_panel.html", {
             "root_prefix": root_prefix
         }
     )
@@ -470,9 +467,9 @@ async def render_task_details_page(
         )
 
         return templates.TemplateResponse(
+            request,
             "task_details.html",
             {
-                "request": request,
                 "task_id": task.task_id,
                 "root_prefix": root_prefix
             }

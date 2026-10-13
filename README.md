@@ -31,6 +31,8 @@ I built this system in just three days with almost no prior knowledge of web des
 
 ## Installation
 
+Requires Python 3.11 or newer.
+
 1. Clone the repository:
     ```bash
     git clone https://github.com/carlosplanchon/nanosaas.git
@@ -39,13 +41,21 @@ I built this system in just three days with almost no prior knowledge of web des
 
 2. Set up the environment:
     ```bash
+    python3 -m venv .venv
+    source .venv/bin/activate
     pip install -r requirements.txt
     ```
 
 3. Configure the `config.toml` file:
-    - Create a `config.toml` file in the root directory based on the provided `config.template.toml`.
+    - Create it in the root directory from the provided template:
+        ```bash
+        cp config_template.toml config.toml
+        ```
     - Fill in the required fields:
         ```toml
+        [app]
+        ROOT_PATH = ""  # Sub-path the app is served under, without slashes (e.g. "nanosaas"). Leave it empty to serve the app at the root.
+
         [api]
         # --- Internal Keys --- #
         JWT_SIGNING_SECRET_KEY = "your_secret_key"  # Used to sign JWTs; ensure this is a strong, secret key.
@@ -53,7 +63,7 @@ I built this system in just three days with almost no prior knowledge of web des
         # --- Third parties keys --- #
         GOOGLE_CLIENT_ID = "your_google_client_id"
         GOOGLE_CLIENT_SECRET = "your_google_client_secret"
-        GOOGLE_REDIRECT_URI = "your_redirect_uri"
+        GOOGLE_REDIRECT_URI = "http://127.0.0.1:8000/auth/callback"  # Must be an authorized redirect URI of your Google OAuth client.
 
         [database]
         DB_HOST = "your_db_host"
@@ -67,21 +77,23 @@ I built this system in just three days with almost no prior knowledge of web des
         broker="redis://127.0.0.1:6379/0"
         backend="redis://127.0.0.1:6379/0"
         ```
-    - Replace placeholders with your actual values.
+    - Replace placeholders with your actual values. You can generate `JWT_SIGNING_SECRET_KEY` with `python scripts/generate_jwt_secret_key.py`.
 
 4. Run the services:
-    - **PostgreSQL**: Make sure PostgreSQL is running and configured.
+    - **PostgreSQL**: Make sure PostgreSQL is running and configured. The tables are created automatically when the backend starts.
     - **Redis**: Start Redis (e.g., using Docker: `docker run -p 6379:6379 redis`).
 
 5. Start the backend:
     ```bash
-    uvicorn main:app --reload
+    uvicorn main_api:app --reload
     ```
 
-6. Start the Celery worker:
+6. Start the Celery worker in another terminal, with the virtual environment activated:
     ```bash
-    celery -A celery_task.celery worker --loglevel=info
+    celery -A celery_task worker --loglevel=info
     ```
+
+Run both commands from the repository root: `config.toml`, the templates and the static files are loaded from the current directory.
 
 ---
 
@@ -96,26 +108,39 @@ I built this system in just three days with almost no prior knowledge of web des
 
    ![User Panel](docs/user_panel.png)
 
-4. Each user starts with a predefined number of credits (e.g., 5). A credit is deducted for each task executed. If credits run out, the user will need to wait or request more credits.
-5. Customize your tasks by modifying the `celery_task.py` file. For example, the included `divide()` function in `celery_task.py` simulates a long-running operation:
+4. Each user starts with a predefined number of credits (25 by default, set in `web/db_models.py`). A credit is reserved when a task is queued and given back if the task fails, so only successful tasks are charged. If credits run out, the user will need to wait or request more credits.
+5. Customize your tasks by modifying the `celery_task.py` file. For example, the included `divide` task simulates a long-running operation in `run_divide()`:
     ```python
-    @celery_app.task
-    def divide(x, y, user_id):
-        time.sleep(5)  # Simulate a long-running operation
-        if y == 0:
-            return {"result": "UNDEFINED"}
-        return x / y
+    async def run_divide(self, x, y, user_id):
+        await init_db()
+
+        try:
+            time.sleep(5)  # Simulate a long-running operation
+            result: float = x / y
+        except Exception as e:
+            # The credit was reserved when the task was queued, and only
+            # successful runs are charged: give it back.
+            await Account.refund_credit(user_id)
+            return {
+                "status": "error",
+                "message": "An unexpected error occurred",
+                "error": str(e),
+            }
+        finally:
+            await Tortoise.close_connections()
+
+        return result
     ```
-   Replace or extend this function to implement your own task logic.
+   Replace or extend this function to implement your own task logic. When your task fails, call `Account.refund_credit(user_id)` so the user isn't charged for it.
 
 ---
 
 ## Development Notes
 
 - To monitor tasks:
-    - Use **Flower** for Celery monitoring: `celery -A celery_task.celery flower --port=5555`.
-    - Use the Celery TUI monitor: `celery -A celery_task.celery events`.
-- Database migrations are managed with **Aerich**.
+    - Use **Flower** for Celery monitoring: install it with `pip install flower`, then run `celery -A celery_task flower --port=5555`.
+    - Use the Celery TUI monitor: `celery -A celery_task events`.
+- The database tables are created automatically when the backend starts (`generate_schemas=True` in `main_api.py`). For migrations, `shared.py` already has a `TORTOISE_ORM` config for **Aerich** (`pip install aerich`).
 
 ---
 

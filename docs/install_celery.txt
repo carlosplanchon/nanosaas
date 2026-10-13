@@ -1,10 +1,10 @@
 # Start Celery worker:
-python -m celery -A celery_task.celery worker --loglevel=info
+python -m celery -A celery_task worker --loglevel=info
 
 # On another terminal, start Celery Flower web monitor:
-python -m celery -A celery_task.celery flower --port=5555
+python -m celery -A celery_task flower --port=5555
 # TUI monitor:
-python -m celery -A celery_task.celery events
+python -m celery -A celery_task events
 
 # In the first terminal window, run a few more tasks, making sure you have at least one that will fail:
 task = divide.delay(1, 2)
