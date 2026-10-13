@@ -155,6 +155,8 @@ pytest
 
 They take a minute or two: the example task waits 5 seconds, and with the broker down Celery retries for a while before giving up.
 
+GitHub Actions runs them with Python 3.11 and 3.15 on every push to `main` and on every pull request (`.github/workflows/tests.yml`).
+
 ---
 
 ## Contributing

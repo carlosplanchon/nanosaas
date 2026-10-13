@@ -1,0 +1,51 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest supported Python (it needs tomllib) and the newest one.
+        python-version: ["3.11", "3.15"]
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      # The tests start PostgreSQL and Redis in Docker, which the runner has.
+      - name: Run the tests
+        run: pytest --basetemp="$RUNNER_TEMP/pytest"
+
+      # The API and worker logs, to see what happened when a test fails.
+      - name: Upload the logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: logs-python-${{ matrix.python-version }}
+          path: ${{ runner.temp }}/pytest/**/*.log
+          if-no-files-found: ignore
