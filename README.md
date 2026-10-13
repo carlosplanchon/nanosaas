@@ -144,6 +144,19 @@ Run both commands from the repository root: `config.toml`, the templates and the
 
 ---
 
+## Tests
+
+The tests need Docker running: they start PostgreSQL and Redis in containers with [testcontainers](https://testcontainers-python.readthedocs.io/), and run the backend and a Celery worker as separate processes, like in production. Your `config.toml` and your database are not touched.
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+They take a minute or two: the example task waits 5 seconds, and with the broker down Celery retries for a while before giving up.
+
+---
+
 ## Contributing
 
 Contributions are welcome! Please fork the repository and submit a pull request. For major changes, please open an issue first to discuss your ideas.

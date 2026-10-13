@@ -4,9 +4,9 @@
     <meta charset="UTF-8">
     <title>Task Details</title>
     <!-- Include Tailwind CSS -->
-    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.tailwindcss.com/3.4.17"></script>
     <!-- Include Alpine.js -->
-    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.17.4/dist/cdn.min.js" integrity="sha384-5/joNqFnRyVWzXp99bHot6RHG+EksGp+USSgZwPar7T9SD9PKKER37n/8bXBAZGd" crossorigin="anonymous" defer></script>
 </head>
 <body class="bg-gray-100 font-sans leading-normal tracking-normal">
     <div class="container mx-auto mt-10" x-data="taskDetails('{{ task_id }}')" x-init="fetchTaskDetails()">
@@ -24,6 +24,15 @@
         </div>
     </div>
     <script>
+        // When the session expires, go back to the login page.
+        function sessionExpired(response) {
+            if (response.status !== 401) {
+                return false;
+            }
+            window.location.href = '{{ root_prefix }}/';
+            return true;
+        }
+
         function taskDetails(taskId) {
             return {
                 task: {
@@ -39,6 +48,9 @@
                     const fetchDetails = () => {
                         fetch(`{{ root_prefix }}/api/task_details_from_user/${taskId}`)
                             .then(response => {
+                                if (sessionExpired(response)) {
+                                    throw new Error('Session expired');
+                                }
                                 if (!response.ok) {
                                     throw new Error(`HTTP error! Status: ${response.status}`);
                                 }

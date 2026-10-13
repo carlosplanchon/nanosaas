@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+import os
+
 from pathlib import Path
 
 import tomllib
@@ -8,7 +10,10 @@ import tomllib
 ##################
 # --- CONFIG --- #
 ##################
-with Path("config.toml").open(mode="rb") as fp:
+# NANOSAAS_CONFIG points to another config file (the tests use it).
+CONFIG_PATH = Path(os.environ.get("NANOSAAS_CONFIG", "config.toml"))
+
+with CONFIG_PATH.open(mode="rb") as fp:
     CONFIG = tomllib.load(fp)
 
 

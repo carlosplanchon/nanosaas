@@ -85,12 +85,6 @@ GOOGLE_REDIRECT_URI = CONFIG["api"]["GOOGLE_REDIRECT_URI"]
 SESSION_COOKIE_FLAGS = {"httponly": True, "secure": True, "samesite": "lax"}
 
 
-google_sso = GoogleSSO(
-    GOOGLE_CLIENT_ID,
-    GOOGLE_CLIENT_SECRET,
-    GOOGLE_REDIRECT_URI
-)
-
 sso = GoogleSSO(
     client_id=GOOGLE_CLIENT_ID,
     client_secret=GOOGLE_CLIENT_SECRET,
@@ -145,6 +139,32 @@ async def get_logged_user(
             status_code=401,
             detail="Invalid authentication credentials"
         ) from error
+
+
+class LoginRequired(Exception):
+    """Raised by get_page_user so the page redirects to the login page."""
+
+
+async def get_page_user(
+    cookie: str | None = Security(APIKeyCookie(name="token", auto_error=False))
+        ) -> OpenID:
+    """
+    Like get_logged_user, for the HTML pages: without a valid session,
+    for example after the JWT expires, send the user to the login page
+    instead of answering with a 401 error.
+    """
+    if cookie is None:
+        raise LoginRequired()
+
+    try:
+        return await get_logged_user(cookie)
+    except HTTPException as error:
+        raise LoginRequired() from error
+
+
+@app.exception_handler(LoginRequired)
+async def redirect_to_login(request: Request, exc: LoginRequired):
+    return RedirectResponse(url=f"{root_prefix}/")
 
 
 @app.get("/", include_in_schema=False)
@@ -316,7 +336,7 @@ async def create_or_regenerate_api_key(
 @app.get("/user/api_key_page", response_class=HTMLResponse)
 async def api_key_page(
     request: Request,
-    user: OpenID = Depends(get_logged_user)
+    user: OpenID = Depends(get_page_user)
         ):
     """
     Serve the API key management page.
@@ -338,7 +358,7 @@ async def api_key_page(
 @app.get("/userpanel", response_class=HTMLResponse)
 async def serve_page(
     request: Request,
-    user: OpenID = Depends(get_logged_user)
+    user: OpenID = Depends(get_page_user)
         ):
     return templates.TemplateResponse(
         request, "user_panel.html", {
@@ -483,7 +503,7 @@ async def get_status(task_id: str, user: OpenID = Depends(get_logged_user)):
 async def render_task_details_page(
     task_id: str,
     request: Request,
-    user: OpenID = Depends(get_logged_user)
+    user: OpenID = Depends(get_page_user)
         ):
     """
     Render the task details page for the given task ID using a Jinja2 template.
@@ -614,7 +634,7 @@ async def get_task_details_json(task_id: str, api_key: str):
 #      --- DATABASE ---      #
 #                            #
 ##############################
-# Register Tortoise with SQLite
+# Register Tortoise with PostgreSQL
 register_tortoise(
     app,
     db_url=DB_URL,

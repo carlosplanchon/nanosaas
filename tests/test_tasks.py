@@ -1,0 +1,101 @@
+"""Tasks: credits, the API key routes and the task details."""
+import asyncio
+import re
+
+import pytest
+
+from tests.helpers import client_for, insert_task, wait_until_done
+
+pytestmark = [pytest.mark.anyio, pytest.mark.usefixtures("worker")]
+
+
+async def test_api_key_task_charges_one_credit_and_returns_the_result(account, user, anon):
+    r = await anon.get("/api/task/divide/10/4", params={"api_key": account.api_key})
+    assert r.status_code == 200
+    data = await wait_until_done(user, r.json()["id"])
+    assert data["result"] == 2.5
+    assert await account.credits() == 4
+
+
+async def test_failed_task_gives_the_credit_back(account, user, anon):
+    r = await anon.get("/api/task/divide/1/0", params={"api_key": account.api_key})
+    assert r.status_code == 200
+    data = await wait_until_done(user, r.json()["id"])
+    assert data["result"]["status"] == "error"
+    assert await account.credits() == 5
+
+
+async def test_task_details_page_fetches_its_data(db, account, user):
+    task_id = await insert_task(db, account, status="SUCCESS", result=2.0)
+    page = await user.get(f"/task_details/{task_id}")
+    assert page.status_code == 200
+    url = re.search(r"fetch\(`([^`]+)`\)", page.text).group(1).replace("${taskId}", task_id)
+    r = await user.get(url)
+    assert r.status_code == 200
+    assert r.json()["result"] == 2.0
+
+
+async def test_api_task_details_keeps_401_and_404(db, account, anon):
+    task_id = await insert_task(db, account, status="SUCCESS", result=2.0)
+    r = await anon.get(f"/api/task_details/{task_id}", params={"api_key": "wrong"})
+    assert r.status_code == 401
+    r = await anon.get("/api/task_details/no-such-task", params={"api_key": account.api_key})
+    assert r.status_code == 404
+
+
+@pytest.mark.parametrize("route", ["/task/status/", "/task_details/", "/api/task_details_from_user/"])
+async def test_unknown_task_gives_404(user, route):
+    assert (await user.get(route + "no-such-task")).status_code == 404
+
+
+async def test_creating_a_task_with_the_cookie_needs_post(account, user):
+    # A GET that spends credits could be triggered by a link from another site.
+    assert (await user.get("/task/divide/1/1")).status_code == 405
+    assert await account.credits() == 5
+
+
+async def test_concurrent_requests_cannot_spend_more_credits_than_the_account_has(account, user):
+    await account.set_credits(2)
+    rs = await asyncio.gather(*(user.post("/task/divide/6/3") for _ in range(10)))
+    accepted = [r.json()["id"] for r in rs if r.status_code == 200]
+    assert len(accepted) == 2
+    assert sum(r.status_code == 403 for r in rs) == 8
+
+    done = await asyncio.gather(*(wait_until_done(user, task_id) for task_id in accepted))
+    assert [d["result"] for d in done] == [2.0, 2.0]
+    assert await account.credits() == 0
+
+
+async def test_regenerating_the_api_key_does_not_undo_credit_changes(account, user):
+    await account.set_credits(20)
+    stop = asyncio.Event()
+
+    async def regenerate_api_key():
+        while not stop.is_set():
+            await user.post("/user/api_key")
+
+    loops = [asyncio.create_task(regenerate_api_key()) for _ in range(3)]
+    rs = await asyncio.gather(
+        *(user.post("/task/divide/6/3") for _ in range(10)),
+        *(user.post("/task/divide/6/0") for _ in range(5)),
+    )
+    assert all(r.status_code == 200 for r in rs)
+    done = await asyncio.gather(*(wait_until_done(user, r.json()["id"]) for r in rs))
+    stop.set()
+    await asyncio.gather(*loops)
+
+    # The divisions by zero end as SUCCESS with an error as their result,
+    # and only the 10 real results are charged.
+    assert [d["status"] for d in done] == ["SUCCESS"] * 15
+    assert sum(d["result"] == 2.0 for d in done) == 10
+    assert await account.credits() == 10
+
+
+async def test_with_the_broker_down_the_credit_comes_back_and_no_row_is_left(
+    broker_down_server, db, account
+):
+    async with client_for(broker_down_server, account.cookie) as client:
+        r = await client.post("/task/divide/1/1")
+    assert r.status_code == 500
+    assert await account.credits() == 5
+    assert await db.fetchval("SELECT count(*) FROM taskhistory WHERE user_id = $1", account.id) == 0

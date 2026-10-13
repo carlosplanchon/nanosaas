@@ -13,7 +13,7 @@ import asyncio
 import time
 
 
-# Initialize Tortoise ORM and Celery
+# Initialize Celery
 celery_app = Celery(
     __name__,
     broker=CONFIG["celery"]["broker"],
@@ -44,7 +44,6 @@ async def run_divide(self, x, y, user_id):
     await init_db()
 
     try:
-        # Execute the Node.js script
         time.sleep(5)  # Simulate a long-running operation
         result: float = x / y
     except Exception as e:
