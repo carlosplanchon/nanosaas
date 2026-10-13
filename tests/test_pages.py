@@ -1,5 +1,6 @@
 """Pages, static files, and the redirect to the login page without a valid session."""
 import datetime
+import re
 
 import pytest
 
@@ -26,6 +27,15 @@ async def test_public_pages_and_static_files(anon):
 )
 async def test_user_pages_with_a_session(user, path):
     assert (await user.get(path)).status_code == 200
+
+
+@pytest.mark.parametrize("path", ["/", "/thankyou", "/userpanel", "/user/api_key_page"])
+async def test_pages_have_a_favicon(user, path):
+    page = await user.get(path)
+    href = re.search(r'<link rel="icon"[^>]* href="([^"]+)"', page.text).group(1)
+    icon = await user.get(href)
+    assert icon.status_code == 200
+    assert icon.headers["content-type"].startswith("image/svg+xml")
 
 
 async def test_credits_with_the_api_key(account, anon):
@@ -75,4 +85,5 @@ async def test_pages_and_links_with_a_root_path(prefixed_server):
         assert (r.status_code, r.headers.get("location")) == (307, "/nanosaas/")
         r = await client.get("/nanosaas/")
         assert 'href="/nanosaas/auth/login"' in r.text
+        assert 'href="/nanosaas/web/static/nanosaas_logo.svg"' in r.text
         assert (await client.get("/nanosaas/web/static/nanosaas_logo.svg")).status_code == 200

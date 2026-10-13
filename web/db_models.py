@@ -12,7 +12,7 @@ from tortoise.transactions import in_transaction
 
 # Define Account Model using TortoiseORM
 class Account(Model):
-    id = fields.IntField(pk=True)
+    id = fields.IntField(primary_key=True)
     google_id = fields.CharField(max_length=255, unique=True)
     email = fields.CharField(max_length=255, unique=True)
     first_name = fields.CharField(max_length=50, null=True)
@@ -50,7 +50,7 @@ class Account(Model):
 
 
 class TaskHistory(Model):
-    id = fields.IntField(pk=True)
+    id = fields.IntField(primary_key=True)
     user = fields.ForeignKeyField(
         "models.Account",
         related_name="task_history"

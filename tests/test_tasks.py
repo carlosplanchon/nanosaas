@@ -1,6 +1,7 @@
 """Tasks: credits, the API key routes and the task details."""
 import asyncio
 import re
+import time
 
 import pytest
 
@@ -95,7 +96,11 @@ async def test_with_the_broker_down_the_credit_comes_back_and_no_row_is_left(
     broker_down_server, db, account
 ):
     async with client_for(broker_down_server, account.cookie) as client:
+        start = time.monotonic()
         r = await client.post("/task/divide/1/1")
+        elapsed = time.monotonic() - start
     assert r.status_code == 500
+    # Celery gives up on the result backend after 2 s (it used to take 19 s).
+    assert elapsed < 10
     assert await account.credits() == 5
     assert await db.fetchval("SELECT count(*) FROM taskhistory WHERE user_id = $1", account.id) == 0

@@ -4,7 +4,7 @@
 # by using the specified project name as a prefix. This helps to avoid conflicts
 # between multiple projects running on the same system.
 
-docker-compose -p nanosaas up -d
+docker compose -p nanosaas up -d
 
 # To stop the service write:
 # docker compose -p nanosaas down

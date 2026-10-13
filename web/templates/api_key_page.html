@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Create or Regenerate API Key</title>
+    <link rel="icon" type="image/svg+xml" href="{{ root_prefix }}/web/static/nanosaas_logo.svg">
     <script src="https://cdn.tailwindcss.com/3.4.17"></script>
 </head>
 <body class="flex flex-col items-center justify-center min-h-screen bg-gray-100">
@@ -19,9 +20,10 @@
                     id="api_key" 
                     name="api_key" 
                     class="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm bg-gray-50 text-gray-500" 
-                    placeholder="Fetching API key..." 
+                    placeholder="Fetching API key..."
                     readonly
                 />
+                <p class="mt-2 text-sm text-gray-500">Send it in the <code>X-API-Key</code> header of your API requests.</p>
             </div>
 
             <div class="flex justify-end">

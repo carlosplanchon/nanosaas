@@ -19,6 +19,9 @@ celery_app = Celery(
     broker=CONFIG["celery"]["broker"],
     backend=CONFIG["celery"]["backend"],
     broker_connection_retry_on_startup=True,
+    # Give up on the result backend after 2 s. With the default policy, a
+    # request that queued a task waited 19 s to fail when Redis was down.
+    result_backend_transport_options={"retry_policy": {"timeout": 2.0}},
 )
 
 

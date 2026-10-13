@@ -140,6 +140,8 @@ Run both commands from the repository root: `config.toml`, the templates and the
     ```
    Replace or extend this function to implement your own task logic. When a task ends, the worker saves its status and result in the task history. If the task raises an exception, it ends as FAILURE and its credit is given back automatically; if it catches the error and returns a result instead, as `run_divide()` does, call `Account.refund_credit(user_id)` yourself.
 
+   Return plain Python values (dicts, lists, numbers or strings): Celery turns them into JSON. Don't return `json.dumps(...)`: the result would be saved as a string, and the API would show it with escaped quotes.
+
 ---
 
 ## Development Notes
