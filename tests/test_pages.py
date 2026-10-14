@@ -54,7 +54,7 @@ async def test_pages_redirect_to_login_without_a_valid_session(server, db, accou
     cookie = {
         "missing": None,
         "expired": session_cookie(account.google_id, expires_in=EXPIRED),
-        "wrong signature": session_cookie(account.google_id, key="another-key"),
+        "wrong signature": session_cookie(account.google_id, key="another-secret-of-at-least-32-bytes"),
     }[session]
 
     async with client_for(server, cookie) as client:

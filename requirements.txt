@@ -7,7 +7,7 @@ pydantic==2.14.1
 
 # Single sign-on:
 fastapi_sso==0.23.0
-python-jose==3.5.0
+PyJWT==2.15.1
 
 # Database:
 tortoise-orm==1.1.8

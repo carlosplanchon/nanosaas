@@ -3,7 +3,7 @@ ROOT_PATH = "..."
 
 [api]
 # --- Internal Keys --- #
-JWT_SIGNING_SECRET_KEY = "..."  # used to sign JWTs, make sure it is really secret
+JWT_SIGNING_SECRET_KEY = "..."  # used to sign JWTs, make sure it is really secret and at least 32 characters long
 
 # --- Third parties keys --- #
 GOOGLE_CLIENT_ID = "..."

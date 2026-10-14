@@ -10,9 +10,10 @@ from dataclasses import dataclass
 
 import asyncpg
 import httpx
-from jose import jwt
+import jwt
 
-SECRET = "test-secret-not-for-production"
+# PyJWT warns about HS256 keys shorter than 32 bytes.
+SECRET = "test-secret-not-for-production-use"
 
 
 def session_cookie(google_id, expires_in=datetime.timedelta(hours=1), key=SECRET):

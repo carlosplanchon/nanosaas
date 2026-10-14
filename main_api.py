@@ -21,8 +21,8 @@ from fastapi.security import APIKeyHeader, APIKeyQuery
 from fastapi_sso.sso.google import GoogleSSO
 from fastapi_sso.sso.base import OpenID
 
-# pip install python-jose
-from jose import jwt
+# pip install PyJWT
+import jwt
 
 from fastapi.templating import Jinja2Templates
 

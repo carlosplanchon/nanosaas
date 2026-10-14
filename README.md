@@ -58,7 +58,7 @@ Requires Python 3.11 or newer.
 
         [api]
         # --- Internal Keys --- #
-        JWT_SIGNING_SECRET_KEY = "your_secret_key"  # Used to sign JWTs; ensure this is a strong, secret key.
+        JWT_SIGNING_SECRET_KEY = "your_secret_key"  # Used to sign JWTs; ensure this is a strong, secret key, at least 32 characters long.
 
         # --- Third parties keys --- #
         GOOGLE_CLIENT_ID = "your_google_client_id"
