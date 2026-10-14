@@ -76,6 +76,9 @@ Requires Python 3.11 or newer.
         # Local Redis:
         broker="redis://127.0.0.1:6379/0"
         backend="redis://127.0.0.1:6379/0"
+        # Optional, in seconds: how long a task can wait in the queue, and how long it can run.
+        queue_timeout = 600
+        time_limit = 600
         ```
     - Replace placeholders with your actual values. You can generate `JWT_SIGNING_SECRET_KEY` with `python scripts/generate_jwt_secret_key.py`.
 
@@ -118,6 +121,8 @@ Run both commands from the repository root: `config.toml`, the templates and the
 
    The page shows the whole key only when you generate it: the database keeps just its first characters and a hash of it.
 5. Each user starts with a predefined number of credits (25 by default, set in `web/db_models.py`). A credit is reserved when a task is queued and given back if the task fails, so only successful tasks are charged. If credits run out, the user will need to wait or request more credits.
+
+   A task that waits in the queue longer than `queue_timeout` seconds is dropped, and one that runs longer than `time_limit` seconds is stopped (10 minutes each by default, set in `config.toml`): either way it fails and its credit comes back. A task that never ends, for example because its worker died, fails the same way once both limits and one more minute have passed.
 6. Customize your tasks by modifying the `celery_task.py` file. For example, the included `divide` task simulates a long-running operation in `run_divide()`:
     ```python
     async def run_divide(self, x, y, user_id):
@@ -140,7 +145,7 @@ Run both commands from the repository root: `config.toml`, the templates and the
 
         return result
     ```
-   Replace or extend this function to implement your own task logic. When a task ends, the worker saves its status and result in the task history. If the task raises an exception, it ends as FAILURE and its credit is given back automatically; if it catches the error and returns a result instead, as `run_divide()` does, call `Account.refund_credit(user_id)` yourself.
+   Replace or extend this function to implement your own task logic. When a task ends, the worker saves its status and result in the task history. If the task raises an exception, it ends as FAILURE and its credit is given back automatically; if it catches the error and returns a result instead, as `run_divide()` does, call `Account.refund_credit(user_id)` yourself. If your tasks take longer than 10 minutes, raise `time_limit`.
 
    Return plain Python values (dicts, lists, numbers or strings): Celery turns them into JSON. Don't return `json.dumps(...)`: the result would be saved as a string, and the API would show it with escaped quotes.
 

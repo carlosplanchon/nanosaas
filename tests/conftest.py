@@ -65,8 +65,10 @@ def services():
         )
 
 
-def write_config(path, services, port, root_path="", broker=None):
+def write_config(path, services, port, root_path="", broker=None, **celery):
+    """celery: more settings for the [celery] section, like time_limit=3."""
     broker = broker or services.redis_url
+    settings = "".join(f"{key} = {value}\n" for key, value in celery.items())
     path.write_text(f"""\
 [app]
 ROOT_PATH = "{root_path}"
@@ -87,7 +89,7 @@ DB_PASSWORD = "{services.db_password}"
 [celery]
 broker = "{broker}"
 backend = "{broker}"
-""")
+{settings}""")
 
 
 def free_port():
@@ -127,6 +129,11 @@ class Process:
             os.killpg(self.proc.pid, signal.SIGKILL)
             self.proc.wait()
 
+    def kill(self):
+        """Like a power cut: the process can't do anything before it dies."""
+        os.killpg(self.proc.pid, signal.SIGKILL)
+        self.proc.wait()
+
 
 @dataclass
 class Server:
@@ -158,17 +165,37 @@ def server(tmp_path_factory, services):
     process.stop()
 
 
-@pytest.fixture(scope="session")
-def worker(server):
-    """A Celery worker with the API's config, plus the test-only tasks."""
-    log = server.config.parent / "worker.log"
+def run_worker(server):
+    """A Celery worker with the server's config, plus the test-only tasks."""
+    name = f"test-{uuid.uuid4().hex[:8]}"
+    log = server.config.parent / f"worker-{name}.log"
     args = [
         sys.executable, "-m", "celery", "-A", "tests.worker_app:celery_app", "worker",
-        "--loglevel=info", "--concurrency=8", "-n", f"test-{uuid.uuid4().hex[:8]}@%h",
+        "--loglevel=info", "--concurrency=8", "-n", f"{name}@%h",
     ]
-    process = Process(args, server.config, log, lambda: " ready." in log.read_text())
+    return Process(args, server.config, log, lambda: " ready." in log.read_text())
+
+
+@pytest.fixture(scope="session")
+def worker(server):
+    """The API's worker."""
+    process = run_worker(server)
     yield
     process.stop()
+
+
+@pytest.fixture
+def start_worker():
+    """Starts workers for a server, which the test can kill, and stops them after it."""
+    processes = []
+
+    def start(server):
+        processes.append(run_worker(server))
+        return processes[-1]
+
+    yield start
+    for process in processes:
+        process.stop()
 
 
 @pytest.fixture(scope="session")
@@ -185,6 +212,20 @@ def broker_down_server(tmp_path_factory, services, server):
     broker = f"redis://127.0.0.1:{free_port()}/0"
     process, broken = run_server(tmp_path_factory, services, "broker-down", broker=broker)
     yield broken
+    process.stop()
+
+
+@pytest.fixture(scope="session")
+def short_limits_server(tmp_path_factory, services, server):
+    """
+    The API with queue_timeout = 2 and time_limit = 4, on its own Redis
+    database: the tests can kill its workers without touching the others.
+    """
+    broker = services.redis_url.rsplit("/", 1)[0] + "/1"
+    process, short = run_server(
+        tmp_path_factory, services, "short-limits", broker=broker, queue_timeout=2, time_limit=4
+    )
+    yield short
     process.stop()
 
 

@@ -5,9 +5,12 @@ the ones the worker couldn't, and a failed task's credit comes back once.
 import asyncio
 import datetime
 import decimal
+import itertools
 import uuid
 
 import pytest
+from celery import states
+from tortoise import Tortoise
 
 from tests.helpers import insert_task, task_row, wait_for_row
 
@@ -82,6 +85,42 @@ async def test_the_api_saves_failures_the_worker_could_not_and_refunds_them_once
     assert all(r.status_code == 200 for r in rs)
     for task_id in task_ids:
         assert await task_row(db, task_id) == ("FAILURE", {**ERROR, "error": "ConnectionRefusedError"})
+    assert await account.credits() == 5
+
+
+async def test_a_task_that_fails_while_the_api_reads_it_gives_its_credit_back(
+    app_module, monkeypatch, db, account
+):
+    # Celery's view of a task that fails right after the API first reads it.
+    reads = itertools.chain(["PENDING"], itertools.repeat("FAILURE"))
+
+    class FailsAfterTheFirstRead:
+        def __init__(self, task_id):
+            pass
+
+        @property
+        def state(self):
+            return next(reads)
+
+        status = state
+
+        def ready(self):
+            return self.state in states.READY_STATES
+
+        result = ZeroDivisionError("division by zero")
+
+    monkeypatch.setattr(app_module, "AsyncResult", FailsAfterTheFirstRead)
+    await account.set_credits(4)
+    task_id = await insert_task(db, account)
+
+    await Tortoise.init(db_url=app_module.DB_URL, modules={"models": ["web.db_models"]})
+    try:
+        for _ in range(2):
+            await app_module.refresh_task(await app_module.TaskHistory.get(task_id=task_id))
+    finally:
+        await Tortoise.close_connections()
+
+    assert await task_row(db, task_id) == ("FAILURE", {**ERROR, "error": "ZeroDivisionError"})
     assert await account.credits() == 5
 
 

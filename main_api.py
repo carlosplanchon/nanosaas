@@ -37,6 +37,7 @@ from celery import states
 from celery.result import AsyncResult
 
 from celery_task import divide as celery_task_divide
+from celery_task import QUEUE_TIMEOUT, TIME_LIMIT
 
 from web.db_models import Account, TaskHistory
 
@@ -277,6 +278,7 @@ async def login_callback(request: Request):
 @app.get("/user/credits")
 async def check_credits(user: OpenID = Depends(get_logged_user)):
     """Check the logged user's remaining credits."""
+    await refresh_overdue_tasks(user.id)
     account = await Account.get(google_id=user.id)
     return {"credits": account.credits}
 
@@ -291,6 +293,8 @@ async def get_user_credits_with_key(
     Returns:
         dict: The number of remaining credits.
     """
+    await refresh_overdue_tasks(account.google_id)
+    await account.refresh_from_db(fields=["credits"])
     return {"credits": account.credits}
 
 
@@ -299,12 +303,7 @@ async def task_history(user: OpenID = Depends(get_logged_user)):
     """Retrieve the logged user's task history."""
     account = await Account.get(google_id=user.id)
     history = await TaskHistory.filter(user=account).order_by("-created_at")
-
-    for task_row in history:
-        try:
-            await refresh_task(task_row)
-        except Exception as e:
-            print(f"Error updating task {task_row.task_id}: {e}")
+    await refresh_tasks(history)
 
     # Refresh history after updates
     history = await TaskHistory.filter(user=account).order_by("-created_at")
@@ -388,6 +387,14 @@ async def serve_page(
 #      --- TASKS ---      #
 #                         #
 ###########################
+# Past this, an unfinished task was lost: Celery can't start or run it anymore.
+TASK_DEADLINE = datetime.timedelta(seconds=QUEUE_TIMEOUT + TIME_LIMIT + 60)
+
+
+class TaskLost(Exception):
+    """A task that didn't end by its deadline: its worker died, or the broker lost it."""
+
+
 async def start_divide_task(account: Account, x: int, y: int) -> TaskInitOut:
     """
     Reserve a credit, save the task in history and start it in Celery.
@@ -397,6 +404,7 @@ async def start_divide_task(account: Account, x: int, y: int) -> TaskInitOut:
     add up to more than the account's credits. It is given back if
     the task fails, so only successful runs are charged.
     """
+    await refresh_overdue_tasks(account.google_id)
     if not await Account.reserve_credit(account.google_id):
         raise HTTPException(status_code=403, detail="Not enough credits")
 
@@ -415,7 +423,8 @@ async def start_divide_task(account: Account, x: int, y: int) -> TaskInitOut:
         # Start the Celery task
         celery_task_divide.apply_async(
             (x, y, account.google_id),
-            task_id=task_id
+            task_id=task_id,
+            expires=QUEUE_TIMEOUT
         )
     except Exception as e:
         # The task never reached the queue: drop its row and give the
@@ -438,21 +447,44 @@ async def refresh_task(task_row: TaskHistory) -> None:
     The worker saves each task when it ends. This covers the ones it
     couldn't save (for example, with the database down), as long as
     Celery still has their result: it forgets results after a day.
+    A task that never ends fails at TASK_DEADLINE, giving its credit back.
     """
     if task_row.status in states.READY_STATES:
         return
 
     result = AsyncResult(task_row.task_id)
+    # Read it once: the task may end between two reads.
+    state = result.state
 
-    if result.ready():
-        await TaskHistory.finish(task_row.task_id, result.status, result.result)
+    if state in states.READY_STATES:
+        await TaskHistory.finish(task_row.task_id, state, result.result)
+    elif task_row.created_at < datetime.datetime.now(tz=datetime.timezone.utc) - TASK_DEADLINE:
+        await TaskHistory.finish(task_row.task_id, states.FAILURE, TaskLost())
     else:
         # Only while unfinished: the worker may have just saved it.
         await TaskHistory.filter(id=task_row.id).exclude(
             status__in=states.READY_STATES
-        ).update(status=result.status)
+        ).update(status=state)
 
     await task_row.refresh_from_db(fields=["status", "result"])
+
+
+async def refresh_tasks(task_rows: list[TaskHistory]) -> None:
+    """refresh_task() for each row, skipping the ones that fail."""
+    for task_row in task_rows:
+        try:
+            await refresh_task(task_row)
+        except Exception as e:
+            print(f"Error updating task {task_row.task_id}: {e}")
+
+
+async def refresh_overdue_tasks(google_id: str) -> None:
+    """Refresh the account's unfinished tasks past TASK_DEADLINE, so the credits are right."""
+    created_before = datetime.datetime.now(tz=datetime.timezone.utc) - TASK_DEADLINE
+    overdue = await TaskHistory.filter(
+        user__google_id=google_id, created_at__lt=created_before
+    ).exclude(status__in=states.READY_STATES)
+    await refresh_tasks(overdue)
 
 
 # POST because it spends a credit: the SameSite=lax cookie still goes

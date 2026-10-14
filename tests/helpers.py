@@ -91,6 +91,14 @@ async def insert_task(db, account, status="PENDING", result=None):
     return task_id
 
 
+async def age_task(db, task_id, age):
+    """Move a task's creation back, as if it had been queued `age` ago."""
+    await db.execute(
+        "UPDATE taskhistory SET created_at = created_at - $2::interval WHERE task_id = $1",
+        task_id, age,
+    )
+
+
 async def task_row(db, task_id):
     row = await db.fetchrow("SELECT status, result FROM taskhistory WHERE task_id = $1", task_id)
     return row["status"], None if row["result"] is None else json.loads(row["result"])
@@ -113,9 +121,18 @@ async def wait_until_done(client, task_id, timeout=60):
         r = await client.get(f"/api/task_details_from_user/{task_id}")
         r.raise_for_status()
         data = r.json()
-        if data["status"] in ("SUCCESS", "FAILURE") or time.monotonic() > deadline:
+        if data["status"] in ("SUCCESS", "FAILURE", "REVOKED") or time.monotonic() > deadline:
             return data
         await asyncio.sleep(0.5)
+
+
+async def wait_for_log(log, text, timeout=30):
+    """Wait for a text to show up in a process's log."""
+    deadline = time.monotonic() + timeout
+    while text not in log.read_text():
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"{text!r} isn't in {log}")
+        await asyncio.sleep(0.1)
 
 
 def cookie_attributes(set_cookie):

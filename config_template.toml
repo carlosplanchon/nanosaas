@@ -20,3 +20,6 @@ DB_PASSWORD = "..."
 [celery]
 broker="..."
 backend="..."
+# Optional, in seconds: how long a task can wait in the queue, and how long it can run.
+queue_timeout = 600
+time_limit = 600

@@ -13,6 +13,11 @@ import asyncio
 import time
 
 
+# Seconds a task can wait in the queue, and run, before it's given up.
+QUEUE_TIMEOUT = CONFIG["celery"].get("queue_timeout", 600)
+TIME_LIMIT = CONFIG["celery"].get("time_limit", 600)
+
+
 # Initialize Celery
 celery_app = Celery(
     __name__,
@@ -22,6 +27,7 @@ celery_app = Celery(
     # Give up on the result backend after 2 s. With the default policy, a
     # request that queued a task waited 19 s to fail when Redis was down.
     result_backend_transport_options={"retry_policy": {"timeout": 2.0}},
+    task_time_limit=TIME_LIMIT,
 )
 
 
