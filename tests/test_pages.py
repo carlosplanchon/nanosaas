@@ -86,4 +86,5 @@ async def test_pages_and_links_with_a_root_path(prefixed_server):
         r = await client.get("/nanosaas/")
         assert 'href="/nanosaas/auth/login"' in r.text
         assert 'href="/nanosaas/web/static/nanosaas_logo.svg"' in r.text
+        assert '<img src="/nanosaas/web/static/nanosaas_logo.svg"' in r.text
         assert (await client.get("/nanosaas/web/static/nanosaas_logo.svg")).status_code == 200

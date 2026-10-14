@@ -209,10 +209,13 @@ def prefixed_server(tmp_path_factory, services, server):
 @pytest.fixture(scope="session")
 def broker_down_server(tmp_path_factory, services, server):
     """The API with its broker pointing to a port where nothing listens."""
-    broker = f"redis://127.0.0.1:{free_port()}/0"
-    process, broken = run_server(tmp_path_factory, services, "broker-down", broker=broker)
-    yield broken
-    process.stop()
+    # Bound but not listening: connections are refused and the API can't get this port.
+    with socket.socket() as reserved:
+        reserved.bind(("127.0.0.1", 0))
+        broker = f"redis://127.0.0.1:{reserved.getsockname()[1]}/0"
+        process, broken = run_server(tmp_path_factory, services, "broker-down", broker=broker)
+        yield broken
+        process.stop()
 
 
 @pytest.fixture(scope="session")
