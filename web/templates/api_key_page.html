@@ -23,7 +23,7 @@
                     placeholder="Fetching API key..."
                     readonly
                 />
-                <p class="mt-2 text-sm text-gray-500">Send it in the <code>X-API-Key</code> header of your API requests.</p>
+                <p class="mt-2 text-sm text-gray-500">Send it in the <code>X-API-Key</code> header of your API requests. The whole key is only shown when you generate it.</p>
             </div>
 
             <div class="flex justify-end">
@@ -54,7 +54,8 @@
             return true;
         }
 
-        // Fetch current API key on page load
+        // Fetch the start of the current API key on page load (only its
+        // hash is stored, so the whole key can't be shown again)
         async function fetchApiKey() {
             try {
                 const response = await fetch('{{ root_prefix }}/user/api_key', {
@@ -68,7 +69,9 @@
                 }
 
                 const data = await response.json();
-                apiKeyInput.value = data.api_key || 'No API key generated yet';
+                apiKeyInput.value = data.api_key_prefix
+                    ? `${data.api_key_prefix}…`
+                    : 'No API key generated yet';
             } catch (error) {
                 apiKeyInput.value = 'Error fetching API key.';
                 console.error(error);
@@ -96,7 +99,7 @@
 
                 const data = await response.json();
                 apiKeyInput.value = data.api_key;
-                successMessage.textContent = "API Key generated successfully.";
+                successMessage.textContent = "API Key generated. Copy it now: it won't be shown again.";
                 successMessage.classList.remove('hidden');
             } catch (error) {
                 errorMessage.textContent = error.message;

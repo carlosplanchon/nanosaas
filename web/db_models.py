@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import hashlib
 import json
 
 from celery import states
@@ -22,11 +23,29 @@ class Account(Model):
     provider = fields.CharField(max_length=50)
     created_at = fields.DatetimeField(auto_now_add=True)
     credits = fields.IntField(default=25)  # Start users with 25 credits
-    # Unique: a key identifies one account, and lookups by key use its index.
-    api_key = fields.CharField(max_length=255, null=True, unique=True)
+    # The API key itself isn't stored: it's shown once, when generated. This
+    # keeps "first 8 characters$SHA-256" of it, in the api_key column. The
+    # prefix tells keys apart, and the unique index finds the account.
+    api_key_hash = fields.CharField(
+        max_length=255, null=True, unique=True, source_field="api_key"
+    )
 
     def __str__(self):
         return self.display_name
+
+    @staticmethod
+    def hash_api_key(api_key: str) -> str:
+        """The stored form of an API key (see api_key_hash)."""
+        return f"{api_key[:8]}${hashlib.sha256(api_key.encode()).hexdigest()}"
+
+    @classmethod
+    async def get_by_api_key(cls, api_key: str):
+        return await cls.get_or_none(api_key_hash=cls.hash_api_key(api_key))
+
+    @property
+    def api_key_prefix(self) -> str | None:
+        """The start of the current API key, to tell which one it is."""
+        return self.api_key_hash[:8] if self.api_key_hash else None
 
     @classmethod
     async def reserve_credit(cls, google_id: str) -> bool:

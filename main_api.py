@@ -180,7 +180,7 @@ async def get_api_key_account(
         ) -> Account:
     """Get the account of the API key, from the header or the query."""
     api_key = header_key or query_key
-    account = await Account.get_or_none(api_key=api_key) if api_key else None
+    account = await Account.get_by_api_key(api_key) if api_key else None
     if not account:
         raise HTTPException(status_code=401, detail="Invalid API key")
     return account
@@ -325,10 +325,11 @@ async def task_history(user: OpenID = Depends(get_logged_user)):
 @app.get("/user/api_key", response_model=dict)
 async def get_api_key(user: OpenID = Depends(get_logged_user)):
     """
-    Fetch the current API key for the logged-in user.
+    Fetch the start of the logged-in user's API key. Only its hash is
+    stored, so the whole key is shown just once, when it's generated.
     """
     account = await Account.get(google_id=user.id)
-    return {"api_key": account.api_key}
+    return {"api_key_prefix": account.api_key_prefix}
 
 
 @app.post("/user/api_key", response_model=dict)
@@ -339,11 +340,12 @@ async def create_or_regenerate_api_key(
 
     # Generate a new API key
     new_api_key = generate_api_key()
-    account.api_key = new_api_key
+    account.api_key_hash = Account.hash_api_key(new_api_key)
     # Save only this field: a full save would also write back the
     # credits read above, undoing any credit reserved meanwhile.
-    await account.save(update_fields=["api_key"])
+    await account.save(update_fields=["api_key_hash"])
 
+    # The only time the whole key is shown: it isn't stored.
     return {"api_key": new_api_key}
 
 

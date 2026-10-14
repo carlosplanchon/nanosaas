@@ -1,10 +1,18 @@
-"""The API key: in the X-API-Key header, or in the query for older clients."""
+"""
+The API key: in the X-API-Key header, or in the query for older clients.
+Only its hash is stored.
+"""
 import asyncio
 import time
+from pathlib import Path
 
 import pytest
 
+from tests.helpers import stored_api_key
+
 pytestmark = pytest.mark.anyio
+
+REPO = Path(__file__).resolve().parent.parent
 
 API_ROUTES = ("/api/user_credits", "/api/task/divide/1/1", "/api/task_details/no-such-task")
 
@@ -66,6 +74,40 @@ async def test_a_key_in_the_header_stays_out_of_the_server_log(server, account, 
     assert any(f"api_key={account.api_key}" in line for line in lines)
     header_line = next(line for line in lines if "probe=header" in line)
     assert account.api_key not in header_line
+
+
+async def test_only_a_hash_of_a_new_key_is_stored(db, account, user, anon):
+    r = await user.post("/user/api_key")
+    new_key = r.json()["api_key"]
+    stored = await db.fetchval("SELECT api_key FROM account WHERE id = $1", account.id)
+    assert stored == stored_api_key(new_key)
+    assert new_key not in stored
+
+    # The new key works, and the one it replaced doesn't anymore.
+    r = await anon.get("/api/user_credits", headers={"X-API-Key": new_key})
+    assert r.status_code == 200
+    r = await anon.get("/api/user_credits", headers={"X-API-Key": account.api_key})
+    assert r.status_code == 401
+
+
+async def test_the_api_key_page_only_gets_the_start_of_the_key(account, user):
+    r = await user.get("/user/api_key")
+    assert r.json() == {"api_key_prefix": account.api_key[:8]}
+
+
+async def test_keys_from_before_hashing_work_after_the_migration_script(db, account, anon):
+    # An account from before the hashing: its key stored as is.
+    await db.execute("UPDATE account SET api_key = $1 WHERE id = $2", account.api_key, account.id)
+    headers = {"X-API-Key": account.api_key}
+    assert (await anon.get("/api/user_credits", headers=headers)).status_code == 401
+
+    script = (REPO / "scripts" / "hash_api_keys.sql").read_text()
+    await db.execute(script)
+    await db.execute(script)  # running it again is harmless
+
+    stored = await db.fetchval("SELECT api_key FROM account WHERE id = $1", account.id)
+    assert stored == stored_api_key(account.api_key)
+    assert (await anon.get("/api/user_credits", headers=headers)).status_code == 200
 
 
 async def test_api_keys_are_unique_and_indexed(db):

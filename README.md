@@ -115,6 +115,8 @@ Run both commands from the repository root: `config.toml`, the templates and the
     curl -H "X-API-Key: your_api_key" http://127.0.0.1:8000/api/task_details/your_task_id
     ```
    The `api_key` query parameter still works for older clients, but avoid it: URLs end up in server and proxy logs. The interactive docs at `/docs` list every route.
+
+   The page shows the whole key only when you generate it: the database keeps just its first characters and a hash of it.
 5. Each user starts with a predefined number of credits (25 by default, set in `web/db_models.py`). A credit is reserved when a task is queued and given back if the task fails, so only successful tasks are charged. If credits run out, the user will need to wait or request more credits.
 6. Customize your tasks by modifying the `celery_task.py` file. For example, the included `divide` task simulates a long-running operation in `run_divide()`:
     ```python
@@ -153,6 +155,10 @@ Run both commands from the repository root: `config.toml`, the templates and the
 - `generate_schemas` only creates missing tables, so a database created before API keys became unique doesn't get their index. Add it by hand:
     ```sql
     ALTER TABLE account ADD CONSTRAINT account_api_key_key UNIQUE (api_key);
+    ```
+- A database created before API keys were hashed has them in plain text. Run `scripts/hash_api_keys.sql` once, with the app stopped, before starting this version; the keys keep working:
+    ```bash
+    psql -h your_db_host -p 5432 -U your_db_username -d your_database_name -f scripts/hash_api_keys.sql
     ```
 
 ---

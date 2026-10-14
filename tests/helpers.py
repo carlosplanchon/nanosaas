@@ -1,7 +1,9 @@
 """Helpers shared by the tests."""
 import asyncio
 import datetime
+import hashlib
 import json
+import secrets
 import time
 import uuid
 from dataclasses import dataclass
@@ -54,9 +56,14 @@ class Account:
         await self.db.execute("UPDATE account SET credits = $1 WHERE id = $2", credits, self.id)
 
 
+def stored_api_key(api_key):
+    """How the database keeps an API key: "first 8 characters$SHA-256"."""
+    return f"{api_key[:8]}${hashlib.sha256(api_key.encode()).hexdigest()}"
+
+
 async def create_account(db, credits=5):
     google_id = f"test-{uuid.uuid4()}"
-    api_key = uuid.uuid4().hex
+    api_key = secrets.token_hex(32)  # like generate_api_key() in main_api.py
     account_id = await db.fetchval(
         """
         INSERT INTO account (google_id, email, first_name, last_name, display_name,
@@ -65,7 +72,7 @@ async def create_account(db, credits=5):
                 'google', now(), $3, $4)
         RETURNING id
         """,
-        google_id, f"{google_id}@example.com", credits, api_key,
+        google_id, f"{google_id}@example.com", credits, stored_api_key(api_key),
     )
     return Account(account_id, google_id, api_key, session_cookie(google_id), db)
 
