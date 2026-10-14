@@ -23,7 +23,7 @@ I built this system in just three days with almost no prior knowledge of web des
 ## Tech Stack
 
 - **Backend**: FastAPI, Celery, Redis
-- **Frontend**: Alpine.js, Tailwind CSS
+- **Frontend**: Alpine.js, Tailwind CSS, Prism.js (to color the results' JSON)
 - **Database**: PostgreSQL, Tortoise ORM
 - **Authentication**: Google SSO
 

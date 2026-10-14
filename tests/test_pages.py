@@ -36,7 +36,7 @@ async def test_pages_have_a_favicon_and_the_built_css(user, path):
     page = await user.get(path)
     assert "cdn.tailwindcss.com" not in page.text
     for rel, content_type in [("icon", "image/svg+xml"), ("stylesheet", "text/css")]:
-        href = re.search(rf'<link rel="{rel}"[^>]* href="([^"]+)"', page.text).group(1)
+        href = re.search(rf'<link rel="{rel}"[^>]* href="(/[^"]+)"', page.text).group(1)
         r = await user.get(href)
         assert (r.status_code, r.headers["content-type"].split(";")[0]) == (200, content_type), rel
 
@@ -49,6 +49,12 @@ def test_the_built_css_has_every_class_of_the_templates():
                 # Tailwind escapes these characters in its selectors.
                 selector = "." + re.sub(r"([:/.\[\]])", r"\\\1", name)
                 assert selector in css, f"{name} in {template.name}: run scripts/build_css.py"
+
+
+def test_scripts_and_styles_from_other_sites_have_an_integrity_hash():
+    for template in (REPO / "web" / "templates").glob("*.html"):
+        for tag in re.findall(r'<(?:script|link)\b[^>]*"https://[^>]*>', template.read_text()):
+            assert 'integrity="sha384-' in tag and 'crossorigin="anonymous"' in tag, f"{template.name}: {tag}"
 
 
 async def test_credits_with_the_api_key(account, anon):

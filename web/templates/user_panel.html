@@ -8,6 +8,10 @@
     <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.17.4/dist/cdn.min.js" integrity="sha384-5/joNqFnRyVWzXp99bHot6RHG+EksGp+USSgZwPar7T9SD9PKKER37n/8bXBAZGd" crossorigin="anonymous" defer></script>
     <!-- Include Tailwind CSS -->
     <link rel="stylesheet" href="{{ root_prefix }}/web/static/tailwind.css">
+    <!-- Include Prism.js, to color the results' JSON -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/themes/prism.min.css" integrity="sha384-rCCjoCPCsizaAAYVoz1Q0CmCTvnctK0JkfCSjx7IIxexTBg+uCKtFYycedUjMyA2" crossorigin="anonymous">
+    <script src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/components/prism-core.min.js" integrity="sha384-zLRFO4dwowZvh8kzutOb5AWhH7f39HeJp+N7PtHF1SQtTBnifRx0AtmvTYs3F4YV" crossorigin="anonymous" data-manual></script>
+    <script src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/components/prism-json.min.js" integrity="sha384-RhrmFFMb0ZCHImjFMpR/UE3VEtIVTCtNrtKQqXCzqXZNJala02N3UbVhi+qzw3CY" crossorigin="anonymous"></script>
 </head>
 <body class="bg-gray-100 font-sans leading-normal tracking-normal">
     <div class="container mx-auto mt-10">
@@ -75,7 +79,7 @@
                                 <td class="border p-2 text-center" x-text="task.parameters.x"></td>
                                 <td class="border p-2 text-center" x-text="task.parameters.y"></td>
                                 <td class="border p-2 text-center" x-text="task.status"></td>
-                                <td class="border p-2 text-center" x-text="JSON.stringify(task.result, null, 2)"></td>
+                                <td class="border p-2 text-center" x-html="highlightJson(task.result)"></td>
                                 <td class="border p-2 text-center" x-text="task.created_at"></td>
                                 <td class="border p-2 text-center">
                                     <a :href="`{{ root_prefix }}/task_details/${task.task_id}`" class="text-blue-500 hover:underline">View Details</a>
@@ -96,6 +100,11 @@
             }
             window.location.href = '{{ root_prefix }}/';
             return true;
+        }
+
+        // The value as JSON, colored by Prism, which escapes it first.
+        function highlightJson(value) {
+            return Prism.highlight(JSON.stringify(value ?? null, null, 2), Prism.languages.json, 'json');
         }
 
         function taskManager() {

@@ -6,6 +6,10 @@
     <link rel="icon" type="image/svg+xml" href="{{ root_prefix }}/web/static/nanosaas_logo.svg">
     <!-- Include Tailwind CSS -->
     <link rel="stylesheet" href="{{ root_prefix }}/web/static/tailwind.css">
+    <!-- Include Prism.js, to color the result's JSON -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/themes/prism.min.css" integrity="sha384-rCCjoCPCsizaAAYVoz1Q0CmCTvnctK0JkfCSjx7IIxexTBg+uCKtFYycedUjMyA2" crossorigin="anonymous">
+    <script src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/components/prism-core.min.js" integrity="sha384-zLRFO4dwowZvh8kzutOb5AWhH7f39HeJp+N7PtHF1SQtTBnifRx0AtmvTYs3F4YV" crossorigin="anonymous" data-manual></script>
+    <script src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/components/prism-json.min.js" integrity="sha384-RhrmFFMb0ZCHImjFMpR/UE3VEtIVTCtNrtKQqXCzqXZNJala02N3UbVhi+qzw3CY" crossorigin="anonymous"></script>
     <!-- Include Alpine.js -->
     <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.17.4/dist/cdn.min.js" integrity="sha384-5/joNqFnRyVWzXp99bHot6RHG+EksGp+USSgZwPar7T9SD9PKKER37n/8bXBAZGd" crossorigin="anonymous" defer></script>
 </head>
@@ -17,8 +21,9 @@
             <p class="text-gray-700"><strong>Task Type:</strong> <span x-text="task.task_type"></span></p>
             <p class="text-gray-700"><strong>Parameters:</strong> <span x-text="JSON.stringify(task.parameters, null, 2)"></span></p>
             <p class="text-gray-700"><strong>Status:</strong> <span x-text="task.status"></span></p>
-            <p class="text-gray-700"><strong>Result:</strong> <span x-text="JSON.stringify(task.result, null, 2)"></span></p>
             <p class="text-gray-700"><strong>Created At:</strong> <span x-text="task.created_at"></span></p>
+            <p class="text-gray-700 mt-4"><strong>Result:</strong></p>
+            <pre class="mt-1 p-3 bg-gray-50 border border-gray-200 rounded-md text-sm overflow-x-auto"><code x-html="highlightJson(task.result)"></code></pre>
             <a href="{{ root_prefix }}/userpanel" class="mt-4 inline-block bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded-md">
                 Back to Dashboard
             </a>
@@ -32,6 +37,11 @@
             }
             window.location.href = '{{ root_prefix }}/';
             return true;
+        }
+
+        // The value as JSON, colored by Prism, which escapes it first.
+        function highlightJson(value) {
+            return Prism.highlight(JSON.stringify(value ?? null, null, 2), Prism.languages.json, 'json');
         }
 
         function taskDetails(taskId) {
