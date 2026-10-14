@@ -2,6 +2,7 @@
 import asyncio
 import re
 import time
+import tomllib
 
 import pytest
 
@@ -104,3 +105,27 @@ async def test_with_the_broker_down_the_credit_comes_back_and_no_row_is_left(
     assert elapsed < 10
     assert await account.credits() == 5
     assert await db.fetchval("SELECT count(*) FROM taskhistory WHERE user_id = $1", account.id) == 0
+
+
+async def test_with_the_broker_down_the_errors_keep_its_address_in_the_server_log(
+    broker_down_server, db, account
+):
+    broker = tomllib.loads(broker_down_server.config.read_text())["celery"]["broker"]
+    address = broker.removeprefix("redis://").removesuffix("/0")
+    task_id = await insert_task(db, account)
+
+    async with client_for(broker_down_server, account.cookie) as user:
+        rs = [
+            await user.post("/task/divide/1/1"),
+            await user.get(f"/task/status/{task_id}"),
+            await user.get(f"/api/task_details_from_user/{task_id}"),
+            await user.get(f"/api/task_details/{task_id}", headers={"X-API-Key": account.api_key}),
+        ]
+    assert all(r.status_code == 500 for r in rs)
+    assert [r.json() for r in rs] == [
+        {"detail": "Task initiation failed"},
+        {"detail": "Error retrieving task status"},
+        {"detail": "Error retrieving task details"},
+        {"detail": "Error retrieving task details"},
+    ]
+    assert address in (broker_down_server.config.parent / "uvicorn.log").read_text()

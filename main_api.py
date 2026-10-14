@@ -432,9 +432,11 @@ async def start_divide_task(account: Account, x: int, y: int) -> TaskInitOut:
         await TaskHistory.filter(task_id=task_id).delete()
         await Account.refund_credit(account.google_id)
 
+        # The error goes to the log: it may show where the servers are.
+        print(f"Task initiation failed for {task_id}: {e}")
         raise HTTPException(
             status_code=500,
-            detail=f"Task initiation failed: {e}"
+            detail="Task initiation failed"
         )
 
     return TaskInitOut(id=task_id, message="Task started successfully")
@@ -539,9 +541,10 @@ async def get_status(task_id: str, user: OpenID = Depends(get_logged_user)):
             detail="Task not found or you do not have permission to access it"
         )
     except Exception as e:
+        print(f"Error retrieving task status {task_id}: {e}")
         raise HTTPException(
             status_code=500,
-            detail=f"Error retrieving task status: {e}"
+            detail="Error retrieving task status"
         )
 
 
@@ -576,9 +579,10 @@ async def render_task_details_page(
             detail="Task not found or you do not have permission to access it"
         )
     except Exception as e:
+        print(f"Error retrieving task details {task_id}: {e}")
         raise HTTPException(
             status_code=500,
-            detail=f"Error retrieving task details: {e}"
+            detail="Error retrieving task details"
         )
 
 
@@ -618,9 +622,10 @@ async def get_task_details_json_from_user(
             detail="Task not found or you do not have permission to access it"
         )
     except Exception as e:
+        print(f"Error retrieving task details {task_id}: {e}")
         raise HTTPException(
             status_code=500,
-            detail=f"Error retrieving task details: {e}"
+            detail="Error retrieving task details"
         )
 
 
@@ -666,9 +671,10 @@ async def get_task_details_json(
         # Let the 404 above through instead of turning it into a 500.
         raise
     except Exception as e:
+        print(f"Error retrieving task details {task_id}: {e}")
         raise HTTPException(
             status_code=500,
-            detail=f"Error retrieving task details: {e}"
+            detail="Error retrieving task details"
         )
 
 
