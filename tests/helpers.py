@@ -79,7 +79,7 @@ async def create_account(db, credits=5):
 
 
 async def insert_task(db, account, status="PENDING", result=None):
-    """A history row, like the one start_divide_task() creates before queueing."""
+    """A history row, like the one start_task() creates before queueing."""
     task_id = str(uuid.uuid4())
     await db.execute(
         """
@@ -122,7 +122,7 @@ async def wait_until_done(client, task_id, timeout=60):
         r = await client.get(f"/api/task_details_from_user/{task_id}")
         r.raise_for_status()
         data = r.json()
-        if data["status"] in ("SUCCESS", "FAILURE", "REVOKED") or time.monotonic() > deadline:
+        if data["status"] != "PENDING" or time.monotonic() > deadline:
             return data
         await asyncio.sleep(0.5)
 

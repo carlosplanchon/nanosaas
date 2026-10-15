@@ -44,9 +44,6 @@
             return Prism.highlight(JSON.stringify(value ?? null, null, 2), Prism.languages.json, 'json');
         }
 
-        // Celery's final states: a task in one of them doesn't change anymore.
-        const FINAL_STATES = ['SUCCESS', 'FAILURE', 'REVOKED'];
-
         function taskDetails(taskId) {
             return {
                 task: {
@@ -60,7 +57,8 @@
                 fetchTaskDetails() {
                     const updateInterval = 5000; // 5 seconds
                     let timer = null;
-                    const finished = () => FINAL_STATES.includes(this.task.status);
+                    // The status is empty until the first answer, and PENDING until the task ends.
+                    const finished = () => !['', 'PENDING'].includes(this.task.status);
                     const fetchDetails = () => {
                         fetch(`{{ root_prefix }}/api/task_details_from_user/${taskId}`)
                             .then(response => {

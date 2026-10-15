@@ -3,7 +3,7 @@
 import hashlib
 import json
 
-from celery import states
+from pydantic_core import to_jsonable_python
 
 from tortoise.models import Model
 from tortoise import fields
@@ -77,6 +77,7 @@ class TaskHistory(Model):
     task_id = fields.CharField(max_length=255, unique=True)
     task_type = fields.CharField(max_length=50)
     parameters = fields.JSONField()
+    # PENDING until the task ends as SUCCESS or FAILURE.
     status = fields.CharField(max_length=50, default="PENDING")
     result = fields.JSONField(null=True)  # Store task results or error details
     created_at = fields.DatetimeField(auto_now_add=True)
@@ -85,38 +86,36 @@ class TaskHistory(Model):
         return f"{self.task_type} - {self.task_id}"
 
     @classmethod
-    async def finish(cls, task_id: str, state: str, result) -> bool:
+    async def finish(cls, task_id: str, result=None, error: BaseException | None = None) -> bool:
         """
-        Save a task's final Celery state and result, only the first time.
+        Save a pending task's result, or the error it failed with, only
+        the first time.
 
         The worker calls this when a task ends, and the API when it finds
         a finished task the worker couldn't save. The update only matches
-        unfinished rows, so a failed task's credit is given back once.
+        pending rows, so a failed task's credit is given back once.
         Returns False if the task has no row or was already finished.
         """
-        if state not in states.READY_STATES:
-            return False
-
-        if state != states.SUCCESS:
-            # A failed or revoked task's result is an exception. Keep only
-            # its type: the message may expose details of the servers.
+        if error is not None:
+            # Keep only the exception's type: its message may expose
+            # details of the servers.
             result = {
                 "status": "error",
                 "message": "The task failed",
-                "error": type(result).__name__,
+                "error": type(error).__name__,
             }
 
-        # Encode it here: the JSON field can't store the datetimes, Decimals
-        # and UUIDs that Celery decodes back into objects, and it takes any
-        # str as JSON that is already encoded.
-        encoded = json.dumps(result, default=str)
+        # Encode it here: the JSON field can't store datetimes, Decimals or
+        # UUIDs, and it takes any str as JSON that is already encoded.
+        encoded = json.dumps(to_jsonable_python(result, fallback=str))
+        status = "SUCCESS" if error is None else "FAILURE"
 
         async with in_transaction():
-            updated = await cls.filter(task_id=task_id).exclude(
-                status__in=states.READY_STATES
-            ).update(status=state, result=encoded)
+            updated = await cls.filter(task_id=task_id, status="PENDING").update(
+                status=status, result=encoded
+            )
 
-            if updated and state != states.SUCCESS:
+            if updated and error is not None:
                 # Only successful tasks are charged.
                 task = await cls.get(task_id=task_id).prefetch_related("user")
                 await Account.refund_credit(task.user.google_id)

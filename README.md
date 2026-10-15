@@ -8,7 +8,7 @@ I built this system in just three days with almost no prior knowledge of web des
 
 ## Features
 
-- **Task Management**: Run and monitor background tasks using Celery.
+- **Task Management**: Run and monitor background tasks using TaskIQ.
 - **Real-Time Updates**: Track task statuses and results in real time.
 - **Secure Authentication**: Google SSO for easy and secure login.
 - **Credits System**: Users are assigned credits to manage task execution, ensuring controlled resource usage.
@@ -22,9 +22,9 @@ I built this system in just three days with almost no prior knowledge of web des
 
 ## Tech Stack
 
-- **Backend**: FastAPI, Celery, Redis
+- **Backend**: FastAPI, TaskIQ, Redis
 - **Frontend**: Alpine.js, Tailwind CSS, Prism.js (to color the results' JSON)
-- **Database**: PostgreSQL, Tortoise ORM
+- **Database**: PostgreSQL, Tortoise ORM (and its migrations)
 - **Authentication**: Google SSO
 
 ---
@@ -52,19 +52,20 @@ I built this system in just three days with almost no prior knowledge of web des
     GOOGLE_CLIENT_SECRET = "your_google_client_secret"
     GOOGLE_REDIRECT_URI = "http://127.0.0.1:8000/auth/callback"  # Must be an authorized redirect URI of your Google OAuth client.
     ```
-    You can generate `JWT_SIGNING_SECRET_KEY` with `python3 scripts/generate_jwt_secret_key.py`. The rest of the template already works with Docker: `[database]` and `[celery]` point to the PostgreSQL and Redis of `compose.yaml`, and `ROOT_PATH` is empty, to serve the app at the root.
+    You can generate `JWT_SIGNING_SECRET_KEY` with `python3 scripts/generate_jwt_secret_key.py`. The rest of the template already works with Docker: `[database]` and `[taskiq]` point to the PostgreSQL and Redis of `compose.yaml`, and `ROOT_PATH` is empty, to serve the app at the root.
 
 3. Start the app with Docker Compose:
     ```bash
     docker compose up --build
     ```
-    It runs PostgreSQL, Redis, the backend and a Celery worker, and serves the app at `http://127.0.0.1:8000`, only to this machine. Add `-d` to run it in the background.
+    It runs PostgreSQL, Redis, the backend and a TaskIQ worker, and serves the app at `http://127.0.0.1:8000`, only to this machine. Add `-d` to run it in the background.
     - After changing the code, run the same command again. After changing `config.toml`, run `docker compose restart api worker`.
+    - The backend creates the tables the first time, and applies new migrations whenever it starts (see the Development Notes).
     - The data is kept in Docker volumes, so it survives restarts. `docker compose down -v` deletes it.
 
 ### Without Docker
 
-Requires Python 3.11 or newer, PostgreSQL and Redis.
+Requires Python 3.11 or newer, PostgreSQL and Redis 6 or newer.
 
 1. Set up the environment:
     ```bash
@@ -73,7 +74,7 @@ Requires Python 3.11 or newer, PostgreSQL and Redis.
     pip install -r requirements.txt
     ```
 
-2. In `config.toml`, point `[database]` and `[celery]` to your PostgreSQL and Redis:
+2. In `config.toml`, point `[database]` and `[taskiq]` to your PostgreSQL and Redis:
     ```toml
     [database]
     DB_HOST = "your_db_host"
@@ -82,22 +83,23 @@ Requires Python 3.11 or newer, PostgreSQL and Redis.
     DB_USERNAME = "your_db_username"
     DB_PASSWORD = "your_db_password"
 
-    [celery]
+    [taskiq]
     # Local Redis:
     broker="redis://127.0.0.1:6379/0"
     backend="redis://127.0.0.1:6379/0"
     ```
-    The tables are created automatically when the backend starts. To run Redis in Docker: `docker run -p 127.0.0.1:6379:6379 redis`. Binding the port to `127.0.0.1` keeps Redis reachable only from this machine: ports published by Docker skip firewalls like ufw.
+    The backend creates the tables, and applies new migrations, when it starts. To run Redis in Docker: `docker run -p 127.0.0.1:6379:6379 redis`. Binding the port to `127.0.0.1` keeps Redis reachable only from this machine: ports published by Docker skip firewalls like ufw.
 
 3. Start the backend:
     ```bash
     uvicorn main_api:app --reload
     ```
 
-4. Start the Celery worker in another terminal, with the virtual environment activated:
+4. Start the TaskIQ worker in another terminal, with the virtual environment activated:
     ```bash
-    celery -A celery_task worker --loglevel=info
+    taskiq worker taskiq_task:broker --receiver taskiq_task:Receiver
     ```
+    `--receiver` makes it drop the tasks that waited in the queue longer than `queue_timeout`.
 
 Run both commands from the repository root: `config.toml`, the templates and the static files are loaded from the current directory.
 
@@ -114,7 +116,7 @@ Run both commands from the repository root: `config.toml`, the templates and the
 
    ![User Panel](docs/user_panel.png)
 
-   It shows the latest 50 tasks (`TASK_HISTORY_LIMIT` in `main_api.py`). It checks them every 5 seconds while one is unfinished, every 30 seconds otherwise, and not while its tab is hidden.
+   It shows the latest 50 tasks (`TASK_HISTORY_LIMIT` in `main_api.py`). It checks them every 5 seconds while one is pending, every 30 seconds otherwise, and not while its tab is hidden.
 
 4. Use the API with the key from the *API Key Management* page, sent in the `X-API-Key` header:
     ```bash
@@ -127,14 +129,15 @@ Run both commands from the repository root: `config.toml`, the templates and the
    The page shows the whole key only when you generate it: the database keeps just its first characters and a hash of it.
 5. Each user starts with a predefined number of credits (25 by default, set in `web/db_models.py`). A credit is reserved when a task is queued and given back if the task fails, so only successful tasks are charged. When credits run out, the user can't start more tasks until you add credits in the database, for example with `UPDATE account SET credits = credits + 25 WHERE email = 'user@example.com';`. With Docker, `docker compose exec postgres psql -U nanosaas` opens a database shell.
 
-   A task that waits in the queue longer than `queue_timeout` seconds is dropped, and one that runs longer than `time_limit` seconds is stopped (10 minutes each by default, set in `config.toml`): either way it fails and its credit comes back. A task that never ends, for example because its worker died, fails the same way once both limits and one more minute have passed.
-6. Customize your tasks by modifying the `celery_task.py` file. For example, the included `divide` task simulates a long-running operation in `run_divide()`:
-    ```python
-    async def run_divide(self, x, y, user_id):
-        await init_db()
+   A task that waits in the queue longer than `queue_timeout` seconds is dropped, failing as `TaskExpired`, and one that runs longer than `time_limit` seconds is stopped, failing as `TimeoutError` (10 minutes each by default, set in `config.toml`): either way its credit comes back. A task that never ends, for example because its worker died, fails the same way, as `TaskLost`, once both limits and one more minute have passed.
 
+   TaskIQ stops a task by cancelling it, which only works while the task awaits something. Blocking code, like `time.sleep()` or a long computation, can't be stopped, and holds up the worker's other tasks: use async libraries, or run it with `await asyncio.to_thread(...)`. In a thread, the task fails at `time_limit`, but the thread keeps running until it ends.
+6. Add your own tasks in `taskiq_task.py`. The included `divide` task simulates a long-running operation:
+    ```python
+    @broker.task(task_name="divide")
+    async def divide(x: int, y: int, user_id: str):
         try:
-            time.sleep(5)  # Simulate a long-running operation
+            await asyncio.sleep(5)  # Simulate a long-running operation
             result: float = x / y
         except Exception as e:
             # The credit was reserved when the task was queued, and only
@@ -145,14 +148,28 @@ Run both commands from the repository root: `config.toml`, the templates and the
                 "message": "An unexpected error occurred",
                 "error": str(e),
             }
-        finally:
-            await Tortoise.close_connections()
 
         return result
     ```
-   Replace or extend this function to implement your own task logic. When a task ends, the worker saves its status and result in the task history. If the task raises an exception, it ends as FAILURE and its credit is given back automatically; if it catches the error and returns a result instead, as `run_divide()` does, call `Account.refund_credit(user_id)` yourself. If your tasks take longer than 10 minutes, raise `time_limit`.
+   To add a task, for example one that squares a number:
+   1. Write it in `taskiq_task.py`, as an async function with `@broker.task(task_name=...)`. It gets the parameters you give it, plus `user_id`, the user's Google ID. The name is saved as the task's type in the history, so keep it under 50 characters and don't change it once the task has run:
+       ```python
+       @broker.task(task_name="square")
+       async def square(n: int, user_id: str):
+           return n * n
+       ```
+   2. In `main_api.py`, import it (`from taskiq_task import square as taskiq_task_square`) and add its routes, like the ones of `divide`: a POST one for the panel, and a GET one under `/api/` for API keys. They call `start_task()`, which reserves the credit, saves the task in the history with its parameters, and queues it:
+       ```python
+       @app.post("/task/square/{n}", response_model=TaskInitOut)
+       async def square(n: int, user: OpenID = Depends(get_logged_user)):
+           account = await Account.get(google_id=user.id)
+           return await start_task(account, taskiq_task_square, n=n)
+       ```
+   3. Add its inputs to `web/templates/user_panel.html`, whose form only starts `divide`. The history, the task details page and the API already show any task, with its type and parameters.
 
-   Return plain Python values (dicts, lists, numbers or strings): Celery turns them into JSON. Don't return `json.dumps(...)`: the result would be saved as a string, and the API would show it with escaped quotes.
+   The tasks can use the database through the models in `web/db_models.py`: the worker connects to it when it starts. When a task ends, the worker saves its status and result in the task history. If the task raises an exception, it ends as FAILURE and its credit is given back automatically; if it catches the error and returns a result instead, as `divide` does, call `Account.refund_credit(user_id)` yourself. If your tasks take longer than 10 minutes, raise `time_limit`.
+
+   Return plain Python values (dicts, lists, numbers or strings): TaskIQ turns them into JSON. Don't return `json.dumps(...)`: the result would be saved as a string, and the API would show it with escaped quotes.
 7. Customize the pages in `web/templates/`. Put images, icons and other static files in `web/static/`: they are served at `/web/static/`. In the templates, start their URLs with `{{ root_prefix }}` so they also work with a `ROOT_PATH`, as the logo in `login.html` does.
 
    The pages load Tailwind from `web/static/tailwind.css`, which only has the classes the templates use. After changing them, rebuild it with `python scripts/build_css.py`: it uses Tailwind's standalone CLI, which doesn't need Node.js and is downloaded the first time. The tests fail if a class in the templates is missing from it.
@@ -161,11 +178,13 @@ Run both commands from the repository root: `config.toml`, the templates and the
 
 ## Development Notes
 
-- To monitor tasks:
-    - Use **Flower** for Celery monitoring: install it with `pip install flower`, then run `celery -A celery_task flower --port=5555`.
-    - Use the Celery TUI monitor: `celery -A celery_task events`. With Docker, run it in the worker's container: `docker compose exec worker celery -A celery_task events`.
-- The database tables are created automatically when the backend starts (`generate_schemas=True` in `main_api.py`). For migrations, `shared.py` already has a `TORTOISE_ORM` config for **Aerich** (`pip install aerich`).
-- `generate_schemas` only creates missing tables, so a database created before API keys became unique doesn't get their index. Add it by hand:
+- To monitor tasks, read the worker's log: it shows each task it runs, and the errors. With Docker, `docker compose logs -f worker`. The `taskhistory` table keeps every task's status and result.
+- The database changes are migrations in `web/migrations/`, made with Tortoise ORM's own tool. The backend applies the new ones when it starts, and records them in the `tortoise_migrations` table. After changing the models in `web/db_models.py`, create a migration from the repository root, with the virtual environment activated (it reads `config.toml`, but doesn't connect to the database):
+    ```bash
+    tortoise -c shared.TORTOISE_ORM makemigrations
+    ```
+    Then restart the backend to apply it (with Docker, `docker compose up --build`). The tests fail if the models have changes without a migration.
+- A database created before the migrations is only recorded as migrated the first time this version starts: its tables don't change. If it's from before API keys became unique, add their index by hand:
     ```sql
     ALTER TABLE account ADD CONSTRAINT account_api_key_key UNIQUE (api_key);
     ```
@@ -178,14 +197,14 @@ Run both commands from the repository root: `config.toml`, the templates and the
 
 ## Tests
 
-The tests need Docker running: they start PostgreSQL and Redis in containers with [testcontainers](https://testcontainers-python.readthedocs.io/), and run the backend and a Celery worker as separate processes, like in production. Your `config.toml` and your database are not touched.
+The tests need Docker running: they start PostgreSQL and Redis in containers with [testcontainers](https://testcontainers-python.readthedocs.io/), and run the backend and a TaskIQ worker as separate processes, like in production. Your `config.toml` and your database are not touched.
 
 ```bash
 pip install -r requirements-dev.txt
 pytest
 ```
 
-They take a minute or two: the example task waits 5 seconds, and with the broker down Celery retries for a while before giving up.
+They take a few minutes: the example task waits 5 seconds, and some tests wait for tasks to time out.
 
 GitHub Actions runs them with Python 3.11 and 3.15 on every push to `main` and on every pull request (`.github/workflows/tests.yml`). It also starts the app with Docker Compose and runs two tasks through the API.
 

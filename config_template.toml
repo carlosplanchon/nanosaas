@@ -18,7 +18,7 @@ DB_NAME = "nanosaas"
 DB_USERNAME = "nanosaas"
 DB_PASSWORD = "nanosaas"
 
-[celery]
+[taskiq]
 broker="redis://redis:6379/0"
 backend="redis://redis:6379/0"
 # Optional, in seconds: how long a task can wait in the queue, and how long it can run.

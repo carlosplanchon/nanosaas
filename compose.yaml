@@ -1,4 +1,4 @@
-# The whole app: PostgreSQL, Redis, the backend and a Celery worker.
+# The whole app: PostgreSQL, Redis, the backend and a TaskIQ worker.
 name: nanosaas
 
 x-app: &app
@@ -50,7 +50,7 @@ services:
 
   worker:
     <<: *app
-    command: celery -A celery_task worker --loglevel=info
+    command: taskiq worker taskiq_task:broker --receiver taskiq_task:Receiver
 
 configs:
   config:

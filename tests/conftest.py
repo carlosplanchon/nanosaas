@@ -1,6 +1,6 @@
 """
 Fixtures: PostgreSQL and Redis in Docker (with testcontainers), and the API
-and a Celery worker running as separate processes, like in production.
+and a TaskIQ worker running as separate processes, like in production.
 """
 import os
 import signal
@@ -15,7 +15,6 @@ from pathlib import Path
 import asyncpg
 import httpx
 import pytest
-from celery import Celery
 from testcontainers.community.postgres import PostgresContainer
 from testcontainers.core.container import DockerContainer
 from testcontainers.core.wait_strategies import LogMessageWaitStrategy
@@ -65,10 +64,10 @@ def services():
         )
 
 
-def write_config(path, services, port, root_path="", broker=None, **celery):
-    """celery: more settings for the [celery] section, like time_limit=3."""
+def write_config(path, services, port, root_path="", broker=None, db_name=None, **taskiq):
+    """taskiq: more settings for the [taskiq] section, like time_limit=3."""
     broker = broker or services.redis_url
-    settings = "".join(f"{key} = {value}\n" for key, value in celery.items())
+    settings = "".join(f"{key} = {value}\n" for key, value in taskiq.items())
     path.write_text(f"""\
 [app]
 ROOT_PATH = "{root_path}"
@@ -82,11 +81,11 @@ GOOGLE_REDIRECT_URI = "http://127.0.0.1:{port}/auth/callback"
 [database]
 DB_HOST = "{services.db_host}"
 DB_PORT = {services.db_port}
-DB_NAME = "{services.db_name}"
+DB_NAME = "{db_name or services.db_name}"
 DB_USERNAME = "{services.db_user}"
 DB_PASSWORD = "{services.db_password}"
 
-[celery]
+[taskiq]
 broker = "{broker}"
 backend = "{broker}"
 {settings}""")
@@ -123,6 +122,12 @@ class Process:
         try:
             os.killpg(self.proc.pid, signal.SIGTERM)
             self.proc.wait(timeout=20)
+            # The worker's processes may outlive the main one: wait for them too.
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                os.killpg(self.proc.pid, 0)
+                time.sleep(0.1)
+            os.killpg(self.proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
         except subprocess.TimeoutExpired:
@@ -159,21 +164,36 @@ def run_server(tmp_path_factory, services, name, **config):
 
 @pytest.fixture(scope="session")
 def server(tmp_path_factory, services):
-    """The API. It creates the tables when it starts."""
+    """The API. It applies the migrations when it starts."""
     process, server = run_server(tmp_path_factory, services, "server")
     yield server
     process.stop()
 
 
+@pytest.fixture
+def start_server(tmp_path_factory, services):
+    """Starts APIs with other settings, like db_name, and stops them after the test."""
+    processes = []
+
+    def start(name, **config):
+        process, server = run_server(tmp_path_factory, services, name, **config)
+        processes.append(process)
+        return server
+
+    yield start
+    for process in processes:
+        process.stop()
+
+
 def run_worker(server):
-    """A Celery worker with the server's config, plus the test-only tasks."""
+    """A TaskIQ worker with the server's config, plus the test-only tasks."""
     name = f"test-{uuid.uuid4().hex[:8]}"
     log = server.config.parent / f"worker-{name}.log"
     args = [
-        sys.executable, "-m", "celery", "-A", "tests.worker_app:celery_app", "worker",
-        "--loglevel=info", "--concurrency=8", "-n", f"{name}@%h",
+        sys.executable, "-m", "taskiq", "worker", "tests.worker_app:broker",
+        "--receiver", "taskiq_task:Receiver", "--workers", "1",
     ]
-    return Process(args, server.config, log, lambda: " ready." in log.read_text())
+    return Process(args, server.config, log, lambda: "Listening started." in log.read_text())
 
 
 @pytest.fixture(scope="session")
@@ -233,14 +253,6 @@ def short_limits_server(tmp_path_factory, services, server):
 
 
 @pytest.fixture(scope="session")
-def celery_client(services):
-    """Talks to the worker's broker and result backend, like the API does."""
-    app = Celery(broker=services.redis_url, backend=services.redis_url)
-    yield app
-    app.close()
-
-
-@pytest.fixture(scope="session")
 def app_module(tmp_path_factory, services, server):
     """main_api imported in this process, for the tests that stub parts of it."""
     config = tmp_path_factory.mktemp("in-process") / "config.toml"
@@ -250,6 +262,15 @@ def app_module(tmp_path_factory, services, server):
     os.chdir(REPO)
     import main_api
     return main_api
+
+
+@pytest.fixture
+async def taskiq_client(app_module):
+    """The API's TaskIQ broker and result backend, which the worker's use too."""
+    await app_module.broker.startup()
+    yield app_module.broker
+    # Its Redis connections belong to this test's event loop.
+    await app_module.broker.shutdown()
 
 
 @pytest.fixture

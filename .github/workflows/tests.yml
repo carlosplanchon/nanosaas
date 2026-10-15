@@ -73,10 +73,11 @@ jobs:
         shell: bash
         run: |
           api=http://127.0.0.1:8000
-          # The API creates the tables before it answers.
+          # The API applies the migrations before it answers.
           curl --silent --fail --retry 30 --retry-all-errors --retry-delay 1 --output /dev/null "$api/openapi.json"
           curl --silent --fail "$api/" | grep --quiet "Login with Google"
           curl --silent --fail --output /dev/null "$api/web/static/tailwind.css"
+          docker compose exec -T postgres psql -U nanosaas -tAc "SELECT name FROM tortoise_migrations" | grep --quiet 0001_initial
 
           # Stored like the app does: "first 8 characters$SHA-256".
           key=$(openssl rand -hex 32)

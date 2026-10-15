@@ -14,4 +14,6 @@ tortoise-orm==1.1.9
 asyncpg==0.32.0
 
 # Background tasks:
-celery[redis]==5.6.3
+taskiq==0.13.0
+taskiq-redis==1.2.4
+redis==8.1.0

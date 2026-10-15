@@ -5,8 +5,10 @@ import time
 import tomllib
 
 import pytest
+from taskiq import TaskiqResult
+from tortoise import Tortoise
 
-from tests.helpers import client_for, insert_task, wait_until_done
+from tests.helpers import client_for, insert_task, wait_for_row, wait_until_done
 
 pytestmark = [pytest.mark.anyio, pytest.mark.usefixtures("worker")]
 
@@ -37,14 +39,32 @@ async def test_task_details_page_fetches_its_data(db, account, user):
     assert r.json()["result"] == 2.0
 
 
+async def test_start_task_queues_any_task(app_module, db, account, user, taskiq_client):
+    from tests import worker_app
+
+    await Tortoise.init(config=app_module.TORTOISE_ORM)
+    try:
+        row = await app_module.Account.get(google_id=account.google_id)
+        started = await app_module.start_task(row, worker_app.square, n=3)
+    finally:
+        await Tortoise.close_connections()
+
+    assert await wait_for_row(db, started.id, "SUCCESS") == ("SUCCESS", 9)
+    assert await account.credits() == 4
+    history = (await user.get("/user/task_history")).json()
+    assert (history[0]["task_type"], history[0]["parameters"]) == ("square", {"n": 3})
+
+
 async def test_the_task_history_shows_the_latest_tasks_up_to_date(
-    app_module, db, account, user, celery_client
+    app_module, db, account, user, taskiq_client
 ):
     limit = app_module.TASK_HISTORY_LIMIT
     task_ids = [await insert_task(db, account, status="SUCCESS", result=2.0) for _ in range(limit + 4)]
     # The newest one ended, but the worker couldn't save it.
     task_ids.append(await insert_task(db, account))
-    celery_client.backend.store_result(task_ids[-1], 3.0, "SUCCESS")
+    await taskiq_client.result_backend.set_result(
+        task_ids[-1], TaskiqResult(is_err=False, return_value=3.0, execution_time=0)
+    )
 
     history = (await user.get("/user/task_history")).json()
     assert [task["task_id"] for task in history] == task_ids[::-1][:limit]
@@ -115,7 +135,7 @@ async def test_with_the_broker_down_the_credit_comes_back_and_no_row_is_left(
         r = await client.post("/task/divide/1/1")
         elapsed = time.monotonic() - start
     assert r.status_code == 500
-    # Celery gives up on the result backend after 2 s (it used to take 19 s).
+    # Redis refuses the connection, so it fails right away.
     assert elapsed < 10
     assert await account.credits() == 5
     assert await db.fetchval("SELECT count(*) FROM taskhistory WHERE user_id = $1", account.id) == 0
@@ -124,7 +144,7 @@ async def test_with_the_broker_down_the_credit_comes_back_and_no_row_is_left(
 async def test_with_the_broker_down_the_errors_keep_its_address_in_the_server_log(
     broker_down_server, db, account
 ):
-    broker = tomllib.loads(broker_down_server.config.read_text())["celery"]["broker"]
+    broker = tomllib.loads(broker_down_server.config.read_text())["taskiq"]["broker"]
     address = broker.removeprefix("redis://").removesuffix("/0")
     task_id = await insert_task(db, account)
 

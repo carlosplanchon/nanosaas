@@ -64,8 +64,8 @@
                     <thead>
                         <tr class="bg-gray-200">
                             <th class="border p-2">Task ID</th>
-                            <th class="border p-2">Number 1</th>
-                            <th class="border p-2">Number 2</th>
+                            <th class="border p-2">Task</th>
+                            <th class="border p-2">Parameters</th>
                             <th class="border p-2">Status</th>
                             <th class="border p-2">Result</th>
                             <th class="border p-2">Created At</th>
@@ -76,8 +76,8 @@
                         <template x-for="task in tasks" :key="task.id">
                             <tr class="hover:bg-gray-100">
                                 <td class="border p-2 text-center" x-text="task.task_id"></td>
-                                <td class="border p-2 text-center" x-text="task.parameters.x"></td>
-                                <td class="border p-2 text-center" x-text="task.parameters.y"></td>
+                                <td class="border p-2 text-center" x-text="task.task_type"></td>
+                                <td class="border p-2 text-center" x-text="formatParameters(task.parameters)"></td>
                                 <td class="border p-2 text-center" x-text="task.status"></td>
                                 <td class="border p-2 text-center" x-html="highlightJson(task.result)"></td>
                                 <td class="border p-2 text-center" x-text="task.created_at"></td>
@@ -107,8 +107,10 @@
             return Prism.highlight(JSON.stringify(value ?? null, null, 2), Prism.languages.json, 'json');
         }
 
-        // Celery's final states: a task in one of them doesn't change anymore.
-        const FINAL_STATES = ['SUCCESS', 'FAILURE', 'REVOKED'];
+        // A task's parameters, like "x: 6, y: 3".
+        function formatParameters(parameters) {
+            return Object.entries(parameters ?? {}).map(([name, value]) => `${name}: ${JSON.stringify(value)}`).join(', ');
+        }
 
         function taskManager() {
             let timer = null;
@@ -131,14 +133,14 @@
                     });
                 },
 
-                // Every 5 seconds while a task is unfinished, every 30 otherwise.
+                // Every 5 seconds while a task is pending, every 30 otherwise.
                 async refresh() {
                     // History first, so the credits count the refunds of the finished tasks it shows.
                     await this.fetchTaskHistory();
                     await this.fetchCredits();
                     if (document.hidden) return;
 
-                    const busy = this.tasks.some(task => !FINAL_STATES.includes(task.status));
+                    const busy = this.tasks.some(task => task.status === 'PENDING');
                     clearTimeout(timer);
                     timer = setTimeout(() => this.refresh(), busy ? 5000 : 30000);
                 },

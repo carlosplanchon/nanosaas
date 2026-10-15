@@ -5,7 +5,11 @@ import datetime
 
 import secrets
 
+import time
+
 import uuid
+
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Depends, HTTPException, Security, Request
 
@@ -26,23 +30,27 @@ import jwt
 
 from fastapi.templating import Jinja2Templates
 
-from tortoise.contrib.fastapi import register_tortoise
+from tortoise import Tortoise
+from tortoise.contrib.fastapi import RegisterTortoise, tortoise_exception_handlers
 from tortoise.exceptions import DoesNotExist
+from tortoise.migrations.api import migrate
+from tortoise.migrations.recorder import MigrationRecorder
 
 from fastapi.staticfiles import StaticFiles
 
 from pydantic import BaseModel
 
-from celery import states
-from celery.result import AsyncResult
+from taskiq import AsyncTaskiqDecoratedTask
+from taskiq_redis.exceptions import ResultIsMissingError
 
-from celery_task import divide as celery_task_divide
-from celery_task import QUEUE_TIMEOUT, TIME_LIMIT
+from taskiq_task import broker
+from taskiq_task import divide as taskiq_task_divide
+from taskiq_task import QUEUE_TIMEOUT, TIME_LIMIT
 
 from web.db_models import Account, TaskHistory
 
 from shared import CONFIG
-from shared import DB_URL
+from shared import TORTOISE_ORM
 
 
 #############################
@@ -61,9 +69,23 @@ else:
     root_prefix = ""
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Before RegisterTortoise: migrate() starts Tortoise again, which would undo it.
+    await migrate_database()
+    async with RegisterTortoise(app, config=TORTOISE_ORM):
+        await broker.startup()
+        try:
+            yield
+        finally:
+            await broker.shutdown()
+
+
 app = FastAPI(
     root_path=root_prefix,
-    title="NanoSaaS"
+    title="NanoSaaS",
+    lifespan=lifespan,
+    exception_handlers=tortoise_exception_handlers()
 )
 
 
@@ -99,13 +121,13 @@ sso = GoogleSSO(
 #      --- TYPES ---      #
 #                         #
 ###########################
-# Response model for Celery task status.
+# Response model for TaskIQ task status.
 class TaskOut(BaseModel):
     id: str
     status: str
 
 
-# Response model for Celery task initiation.
+# Response model for TaskIQ task initiation.
 class TaskInitOut(BaseModel):
     id: str
     message: str
@@ -371,7 +393,7 @@ async def api_key_page(
 
 ############################
 #                          #
-#      --- CELERY ---      #
+#      --- TASKIQ ---      #
 #                          #
 ############################
 @app.get("/userpanel", response_class=HTMLResponse)
@@ -391,7 +413,7 @@ async def serve_page(
 #      --- TASKS ---      #
 #                         #
 ###########################
-# Past this, an unfinished task was lost: Celery can't start or run it anymore.
+# Past this, a pending task was lost: TaskIQ can't start or run it anymore.
 TASK_DEADLINE = datetime.timedelta(seconds=QUEUE_TIMEOUT + TIME_LIMIT + 60)
 
 
@@ -399,10 +421,11 @@ class TaskLost(Exception):
     """A task that didn't end by its deadline: its worker died, or the broker lost it."""
 
 
-async def start_divide_task(account: Account, x: int, y: int) -> TaskInitOut:
+async def start_task(account: Account, task: AsyncTaskiqDecoratedTask, **parameters) -> TaskInitOut:
     """
-    Reserve a credit, save the task in history and start it in Celery.
-    Shared by the cookie and the API key endpoints.
+    Reserve a credit, save the task in history and queue it in TaskIQ,
+    with its parameters and the user's ID. Shared by every route that
+    starts a task.
 
     The credit is taken before queueing, so pending tasks can never
     add up to more than the account's credits. It is given back if
@@ -419,17 +442,16 @@ async def start_divide_task(account: Account, x: int, y: int) -> TaskInitOut:
         await TaskHistory.create(
             user=account,
             task_id=task_id,
-            task_type="divide",
-            parameters={"x": x, "y": y},
+            task_type=task.task_name,
+            parameters=parameters,
             status="PENDING"
         )
 
-        # Start the Celery task
-        celery_task_divide.apply_async(
-            (x, y, account.google_id),
-            task_id=task_id,
-            expires=QUEUE_TIMEOUT
-        )
+        # Queue the TaskIQ task
+        await task.kicker().with_task_id(task_id).with_labels(
+            timeout=TIME_LIMIT,
+            queue_deadline=time.time() + QUEUE_TIMEOUT
+        ).kiq(user_id=account.google_id, **parameters)
     except Exception as e:
         # The task never reached the queue: drop its row and give the
         # credit back.
@@ -437,7 +459,7 @@ async def start_divide_task(account: Account, x: int, y: int) -> TaskInitOut:
         await Account.refund_credit(account.google_id)
 
         # The error goes to the log: it may show where the servers are.
-        print(f"Task initiation failed for {task_id}: {e}")
+        print(f"Task initiation failed for {task_id}: {e.__cause__ or e}")
         raise HTTPException(
             status_code=500,
             detail="Task initiation failed"
@@ -448,29 +470,23 @@ async def start_divide_task(account: Account, x: int, y: int) -> TaskInitOut:
 
 async def refresh_task(task_row: TaskHistory) -> None:
     """
-    Update an unfinished task from Celery.
+    Finish a pending task from TaskIQ's result backend.
 
     The worker saves each task when it ends. This covers the ones it
-    couldn't save (for example, with the database down), as long as
-    Celery still has their result: it forgets results after a day.
+    couldn't save (for example, with the database down), as long as the
+    result backend still has their result: it forgets results after a day.
     A task that never ends fails at TASK_DEADLINE, giving its credit back.
     """
-    if task_row.status in states.READY_STATES:
+    if task_row.status != "PENDING":
         return
 
-    result = AsyncResult(task_row.task_id)
-    # Read it once: the task may end between two reads.
-    state = result.state
-
-    if state in states.READY_STATES:
-        await TaskHistory.finish(task_row.task_id, state, result.result)
-    elif task_row.created_at < datetime.datetime.now(tz=datetime.timezone.utc) - TASK_DEADLINE:
-        await TaskHistory.finish(task_row.task_id, states.FAILURE, TaskLost())
+    try:
+        result = await broker.result_backend.get_result(task_row.task_id)
+    except ResultIsMissingError:
+        if task_row.created_at < datetime.datetime.now(tz=datetime.timezone.utc) - TASK_DEADLINE:
+            await TaskHistory.finish(task_row.task_id, error=TaskLost())
     else:
-        # Only while unfinished: the worker may have just saved it.
-        await TaskHistory.filter(id=task_row.id).exclude(
-            status__in=states.READY_STATES
-        ).update(status=state)
+        await TaskHistory.finish(task_row.task_id, result.return_value, result.error)
 
     await task_row.refresh_from_db(fields=["status", "result"])
 
@@ -485,11 +501,11 @@ async def refresh_tasks(task_rows: list[TaskHistory]) -> None:
 
 
 async def refresh_overdue_tasks(google_id: str) -> None:
-    """Refresh the account's unfinished tasks past TASK_DEADLINE, so the credits are right."""
+    """Refresh the account's pending tasks past TASK_DEADLINE, so the credits are right."""
     created_before = datetime.datetime.now(tz=datetime.timezone.utc) - TASK_DEADLINE
     overdue = await TaskHistory.filter(
-        user__google_id=google_id, created_at__lt=created_before
-    ).exclude(status__in=states.READY_STATES)
+        user__google_id=google_id, created_at__lt=created_before, status="PENDING"
+    )
     await refresh_tasks(overdue)
 
 
@@ -502,7 +518,7 @@ async def divide(
     user: OpenID = Depends(get_logged_user)
         ):
     account = await Account.get(google_id=user.id)
-    return await start_divide_task(account, x, y)
+    return await start_task(account, taskiq_task_divide, x=x, y=y)
 
 
 @app.get("/api/task/divide/{x}/{y}", response_model=TaskInitOut)
@@ -521,7 +537,7 @@ async def divide_with_api_key(
     Returns:
         TaskInitOut: Details about the initiated task.
     """
-    return await start_divide_task(account, x, y)
+    return await start_task(account, taskiq_task_divide, x=x, y=y)
 
 
 @app.get("/task/status/{task_id}", response_model=TaskOut)
@@ -687,14 +703,21 @@ async def get_task_details_json(
 #      --- DATABASE ---      #
 #                            #
 ##############################
-# Register Tortoise with PostgreSQL
-register_tortoise(
-    app,
-    db_url=DB_URL,
-    modules={"models": ["web.db_models"]},
-    generate_schemas=True,
-    add_exception_handlers=True
-)
+async def migrate_database() -> None:
+    """
+    Apply the pending migrations of web/migrations. A database created
+    before the migrations already has the tables of the first one: it's
+    only recorded as applied.
+    """
+    connection = (await Tortoise.init(config=TORTOISE_ORM)).db()
+    applied = await MigrationRecorder(connection).applied_migrations()
+    [tables] = await connection.execute_query_dict(
+        "SELECT to_regclass('account') IS NOT NULL AS created"
+    )
+    if tables["created"] and not applied:
+        print("Recording the existing tables as migration models.0001_initial")
+        await migrate(config=TORTOISE_ORM, target="models.0001_initial", fake=True, direction="forward")
+    await migrate(config=TORTOISE_ORM, direction="forward")
 
 
 if __name__ == "__main__":
