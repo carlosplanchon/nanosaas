@@ -109,6 +109,17 @@ jobs:
           echo "Credits: $credits"
           [ "$credits" = 24 ]
 
+      # Caddy, with a certificate of its own for localhost, DOMAIN's default.
+      - name: Serve it over HTTPS
+        env:
+          COMPOSE_PROFILES: https
+        run: |
+          docker compose up --detach --wait
+          curl --silent --fail --insecure --retry 30 --retry-all-errors --retry-delay 1 https://localhost/ | grep --quiet "Login with Google"
+          [ "$(curl --silent --output /dev/null --write-out '%{http_code}' http://localhost/)" = 308 ]
+
       - name: Show the logs
         if: failure()
+        env:
+          COMPOSE_PROFILES: https
         run: docker compose logs

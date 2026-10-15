@@ -110,6 +110,21 @@ Requires Python 3.11 or newer, PostgreSQL and Redis 6 or newer.
 
 Run both commands from the repository root: `config.toml`, the templates and the static files are loaded from the current directory.
 
+### On a server, with HTTPS
+
+To serve the app on your domain, run it with [Caddy](https://caddyserver.com/), which gets the HTTPS certificate and renews it by itself. It's in `compose.yaml`, under the `https` profile.
+
+1. Point your domain to the server, and open the server's ports 80 and 443: Caddy needs both to get the certificate.
+2. In the Google Auth Platform, add your domain to **Authorized domains**, in **Branding**. Then add `https://your-domain.com/auth/callback` to the **Authorized redirect URIs** of your client, and set `GOOGLE_REDIRECT_URI` to it in `config.toml`.
+3. Create a `.env` file next to `compose.yaml`, with your domain and the `https` profile:
+    ```bash
+    DOMAIN=your-domain.com
+    COMPOSE_PROFILES=https
+    ```
+    Then start the app with `docker compose up --build -d`, as before: the profile makes every `docker compose` command include Caddy.
+
+Without `DOMAIN`, Caddy serves `https://localhost`, with a certificate of its own that browsers warn about: that way you can try HTTPS on your machine.
+
 ---
 
 ## Usage
