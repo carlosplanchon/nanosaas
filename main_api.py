@@ -298,15 +298,19 @@ async def get_user_credits_with_key(
     return {"credits": account.credits}
 
 
+# How many tasks the panel shows, the latest first.
+TASK_HISTORY_LIMIT = 50
+
+
 @app.get("/user/task_history")
 async def task_history(user: OpenID = Depends(get_logged_user)):
-    """Retrieve the logged user's task history."""
+    """Retrieve the logged user's latest tasks."""
     account = await Account.get(google_id=user.id)
-    history = await TaskHistory.filter(user=account).order_by("-created_at")
-    await refresh_tasks(history)
+    latest = TaskHistory.filter(user=account).order_by("-created_at").limit(TASK_HISTORY_LIMIT)
+    await refresh_tasks(await latest)
 
     # Refresh history after updates
-    history = await TaskHistory.filter(user=account).order_by("-created_at")
+    history = await latest
     return [
         {
             "id": task.id,

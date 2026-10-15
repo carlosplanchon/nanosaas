@@ -37,6 +37,20 @@ async def test_task_details_page_fetches_its_data(db, account, user):
     assert r.json()["result"] == 2.0
 
 
+async def test_the_task_history_shows_the_latest_tasks_up_to_date(
+    app_module, db, account, user, celery_client
+):
+    limit = app_module.TASK_HISTORY_LIMIT
+    task_ids = [await insert_task(db, account, status="SUCCESS", result=2.0) for _ in range(limit + 4)]
+    # The newest one ended, but the worker couldn't save it.
+    task_ids.append(await insert_task(db, account))
+    celery_client.backend.store_result(task_ids[-1], 3.0, "SUCCESS")
+
+    history = (await user.get("/user/task_history")).json()
+    assert [task["task_id"] for task in history] == task_ids[::-1][:limit]
+    assert (history[0]["status"], history[0]["result"]) == ("SUCCESS", 3.0)
+
+
 async def test_api_task_details_keeps_401_and_404(db, account, anon):
     task_id = await insert_task(db, account, status="SUCCESS", result=2.0)
     r = await anon.get(f"/api/task_details/{task_id}", params={"api_key": "wrong"})

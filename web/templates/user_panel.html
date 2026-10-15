@@ -107,21 +107,40 @@
             return Prism.highlight(JSON.stringify(value ?? null, null, 2), Prism.languages.json, 'json');
         }
 
+        // Celery's final states: a task in one of them doesn't change anymore.
+        const FINAL_STATES = ['SUCCESS', 'FAILURE', 'REVOKED'];
+
         function taskManager() {
+            let timer = null;
+
             return {
                 newTask: { x: 0, y: 0 },
                 tasks: [],
                 credits: 0, // Initialize credits
 
                 init() {
-                    this.fetchCredits();
-                    this.fetchTaskHistory();
+                    this.refresh();
 
-                    // Refresh task history and credits every 5 seconds
-                    setInterval(() => {
-                        this.fetchTaskHistory();
-                        this.fetchCredits();
-                    }, 5000);
+                    // Don't poll while the tab is hidden, and catch up when it shows again.
+                    document.addEventListener('visibilitychange', () => {
+                        if (document.hidden) {
+                            clearTimeout(timer);
+                        } else {
+                            this.refresh();
+                        }
+                    });
+                },
+
+                // Every 5 seconds while a task is unfinished, every 30 otherwise.
+                async refresh() {
+                    // History first, so the credits count the refunds of the finished tasks it shows.
+                    await this.fetchTaskHistory();
+                    await this.fetchCredits();
+                    if (document.hidden) return;
+
+                    const busy = this.tasks.some(task => !FINAL_STATES.includes(task.status));
+                    clearTimeout(timer);
+                    timer = setTimeout(() => this.refresh(), busy ? 5000 : 30000);
                 },
 
                 async fetchCredits() {
@@ -169,7 +188,7 @@
 
                         if (response.ok) {
                             const data = await response.json();
-                            this.fetchTaskHistory(); // Refresh task history after starting a new task
+                            this.refresh(); // Refresh task history and credits after starting a new task
                         } else if (response.status === 403) {
                             alert('Not enough credits');
                         } else {

@@ -44,6 +44,9 @@
             return Prism.highlight(JSON.stringify(value ?? null, null, 2), Prism.languages.json, 'json');
         }
 
+        // Celery's final states: a task in one of them doesn't change anymore.
+        const FINAL_STATES = ['SUCCESS', 'FAILURE', 'REVOKED'];
+
         function taskDetails(taskId) {
             return {
                 task: {
@@ -56,6 +59,8 @@
                 },
                 fetchTaskDetails() {
                     const updateInterval = 5000; // 5 seconds
+                    let timer = null;
+                    const finished = () => FINAL_STATES.includes(this.task.status);
                     const fetchDetails = () => {
                         fetch(`{{ root_prefix }}/api/task_details_from_user/${taskId}`)
                             .then(response => {
@@ -70,12 +75,25 @@
                             .then(data => {
                                 this.task = data;
                             })
-                            .catch(error => console.error('Error fetching task details:', error));
+                            .catch(error => console.error('Error fetching task details:', error))
+                            .finally(() => {
+                                clearTimeout(timer);
+                                if (!finished() && !document.hidden) {
+                                    timer = setTimeout(fetchDetails, updateInterval);
+                                }
+                            });
                     };
 
-                    // Fetch immediately and set up interval
+                    // Don't poll while the tab is hidden, and catch up when it shows again.
+                    document.addEventListener('visibilitychange', () => {
+                        clearTimeout(timer);
+                        if (!document.hidden && !finished()) {
+                            fetchDetails();
+                        }
+                    });
+
+                    // Fetch immediately, and again every 5 seconds until the task ends
                     fetchDetails();
-                    setInterval(fetchDetails, updateInterval);
                 }
             };
         }

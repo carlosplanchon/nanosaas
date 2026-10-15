@@ -111,6 +111,8 @@ Run both commands from the repository root: `config.toml`, the templates and the
 
    ![User Panel](docs/user_panel.png)
 
+   It shows the latest 50 tasks (`TASK_HISTORY_LIMIT` in `main_api.py`). It checks them every 5 seconds while one is unfinished, every 30 seconds otherwise, and not while its tab is hidden.
+
 4. Use the API with the key from the *API Key Management* page, sent in the `X-API-Key` header:
     ```bash
     curl -H "X-API-Key: your_api_key" http://127.0.0.1:8000/api/user_credits
