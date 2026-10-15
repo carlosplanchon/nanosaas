@@ -54,6 +54,13 @@ I built this system in just three days with almost no prior knowledge of web des
     ```
     You can generate `JWT_SIGNING_SECRET_KEY` with `python3 scripts/generate_jwt_secret_key.py`. The rest of the template already works with Docker: `[database]` and `[taskiq]` point to the PostgreSQL and Redis of `compose.yaml`, and `ROOT_PATH` is empty, to serve the app at the root.
 
+    `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` come from a Google OAuth client. Create one in the Google Cloud console, in the [Google Auth Platform](https://console.developers.google.com/auth/clients):
+    1. Select or create a project. If the console asks you to, click **Get started** to register the app: its name, a user support email, **External** as its audience, so any Google account can log in, and a contact email.
+    2. In **Clients**, click **Create client**, choose **Web application**, and add `http://127.0.0.1:8000/auth/callback` to **Authorized redirect URIs**. It must match `GOOGLE_REDIRECT_URI`.
+    3. Copy the client ID and the client secret into `config.toml`. Google shows the whole secret only once, when it creates the client.
+
+    The app only asks Google for the user's name, email and picture, so any Google account can log in while the Google app is in testing: you don't need to add test users or publish it.
+
 3. Start the app with Docker Compose:
     ```bash
     docker compose up --build
