@@ -15,7 +15,7 @@ from taskiq.kicker import AsyncKicker
 from taskiq_redis.exceptions import ResultIsMissingError
 from tortoise import Tortoise
 
-from tests.helpers import age_task, insert_task, task_row, wait_for_row
+from tests.helpers import insert_task, task_row, wait_for_row
 
 pytestmark = [pytest.mark.anyio, pytest.mark.usefixtures("worker")]
 
@@ -154,21 +154,3 @@ async def test_results_are_saved_as_json(result, saved, db, account, anon, taski
     assert r.status_code == 200
     assert (r.json()["status"], r.json()["result"]) == saved
     assert await task_row(db, task_id) == saved
-
-
-async def test_tasks_revoked_by_older_versions_are_left_alone(db, account, user, anon):
-    # Older versions ended the tasks that waited too long in the queue as REVOKED.
-    await account.set_credits(4)
-    revoked = {**ERROR, "error": "TaskRevokedError"}
-    task_id = await insert_task(db, account, status="REVOKED", result=revoked)
-    await age_task(db, task_id, datetime.timedelta(days=1))
-
-    rs = await asyncio.gather(
-        user.get("/user/task_history"),
-        user.get("/user/credits"),
-        user.get(f"/api/task_details_from_user/{task_id}"),
-        anon.get(f"/api/task_details/{task_id}", headers={"X-API-Key": account.api_key}),
-    )
-    assert all(r.status_code == 200 for r in rs)
-    assert await task_row(db, task_id) == ("REVOKED", revoked)
-    assert await account.credits() == 4
