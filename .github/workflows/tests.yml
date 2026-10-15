@@ -49,3 +49,65 @@ jobs:
           name: logs-python-${{ matrix.python-version }}
           path: ${{ runner.temp }}/pytest/**/*.log
           if-no-files-found: ignore
+
+  # The app as compose.yaml runs it, with the config.toml of the README.
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Write config.toml
+        run: |
+          key=$(python3 scripts/generate_jwt_secret_key.py)
+          sed "s|^JWT_SIGNING_SECRET_KEY = .*|JWT_SIGNING_SECRET_KEY = \"$key\"|" config_template.toml > config.toml
+
+      - name: Start the app
+        run: docker compose up --build --detach --wait
+
+      # From a new API key to the tasks' results, through the published port.
+      - name: Run tasks
+        shell: bash
+        run: |
+          api=http://127.0.0.1:8000
+          # The API creates the tables before it answers.
+          curl --silent --fail --retry 30 --retry-all-errors --retry-delay 1 --output /dev/null "$api/openapi.json"
+          curl --silent --fail "$api/" | grep --quiet "Login with Google"
+          curl --silent --fail --output /dev/null "$api/web/static/tailwind.css"
+
+          # Stored like the app does: "first 8 characters$SHA-256".
+          key=$(openssl rand -hex 32)
+          stored="${key:0:8}\$$(printf %s "$key" | sha256sum | cut -d ' ' -f 1)"
+          docker compose exec -T postgres psql -U nanosaas -v ON_ERROR_STOP=1 -c "
+            INSERT INTO account (google_id, email, picture, provider, created_at, credits, api_key)
+            VALUES ('ci', 'ci@example.com', '', 'google', now(), 25, '$stored')"
+
+          get() { curl --silent --fail --header "X-API-Key: $key" "$api$1"; }
+          divide() {
+            local task details
+            task=$(get "/api/task/divide/$1/$2" | jq -r .id)
+            for _ in $(seq 30); do
+              details=$(get "/api/task_details/$task")
+              [ "$(jq -r .status <<< "$details")" = SUCCESS ] && break
+              sleep 1
+            done
+            jq -c .result <<< "$details"
+          }
+
+          result=$(divide 10 4)
+          echo "10 / 4: $result"
+          [ "$result" = 2.5 ]
+          # The worker gives this one's credit back.
+          result=$(divide 1 0)
+          echo "1 / 0: $result"
+          [ "$(jq -r .status <<< "$result")" = error ]
+          credits=$(get /api/user_credits | jq .credits)
+          echo "Credits: $credits"
+          [ "$credits" = 24 ]
+
+      - name: Show the logs
+        if: failure()
+        run: docker compose logs

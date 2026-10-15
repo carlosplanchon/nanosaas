@@ -1,5 +1,5 @@
 [app]
-ROOT_PATH = "..."
+ROOT_PATH = ""  # Sub-path the app is served under, without slashes (e.g. "nanosaas"). Leave it empty to serve the app at the root.
 
 [api]
 # --- Internal Keys --- #
@@ -8,18 +8,19 @@ JWT_SIGNING_SECRET_KEY = "..."  # used to sign JWTs, make sure it is really secr
 # --- Third parties keys --- #
 GOOGLE_CLIENT_ID = "..."
 GOOGLE_CLIENT_SECRET = "..."
-GOOGLE_REDIRECT_URI = "..."
+GOOGLE_REDIRECT_URI = "http://127.0.0.1:8000/auth/callback"  # Must be an authorized redirect URI of your Google OAuth client.
 
+# The PostgreSQL and Redis of compose.yaml. Without Docker, point these to yours.
 [database]
-DB_HOST = "..."
-DB_PORT = "..."  # Use an integer here.
-DB_NAME = "..."
-DB_USERNAME = "..."
-DB_PASSWORD = "..."
+DB_HOST = "postgres"
+DB_PORT = 5432  # Use an integer here.
+DB_NAME = "nanosaas"
+DB_USERNAME = "nanosaas"
+DB_PASSWORD = "nanosaas"
 
 [celery]
-broker="..."
-backend="..."
+broker="redis://redis:6379/0"
+backend="redis://redis:6379/0"
 # Optional, in seconds: how long a task can wait in the queue, and how long it can run.
 queue_timeout = 600
 time_limit = 600

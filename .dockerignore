@@ -1,0 +1,6 @@
+# Only what the app needs: config.toml has secrets, and is mounted when it starts.
+*
+!requirements.txt
+!*.py
+!web
+**/__pycache__

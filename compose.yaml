@@ -1,0 +1,61 @@
+# The whole app: PostgreSQL, Redis, the backend and a Celery worker.
+name: nanosaas
+
+x-app: &app
+  build: .
+  configs:
+    - source: config
+      target: /app/config.toml
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    # Only the other containers reach it. If you change these, change config.toml too.
+    environment:
+      POSTGRES_USER: nanosaas
+      POSTGRES_PASSWORD: nanosaas
+      POSTGRES_DB: nanosaas
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # Over TCP: while it initializes, it only listens on a socket.
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "nanosaas", "-d", "nanosaas"]
+      interval: 2s
+      retries: 30
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    # Saves the queued tasks to disk every minute, so they survive a restart.
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 30
+    restart: unless-stopped
+
+  api:
+    <<: *app
+    ports:
+      # Only reachable from this machine: Docker-published ports skip firewalls like ufw.
+      - 127.0.0.1:8000:8000
+
+  worker:
+    <<: *app
+    command: celery -A celery_task worker --loglevel=info
+
+configs:
+  config:
+    file: ./config.toml
+
+volumes:
+  postgres-data:
+  redis-data:

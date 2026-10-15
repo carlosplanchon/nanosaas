@@ -1,8 +1,8 @@
-fastapi==0.143.0
+fastapi==0.143.1
 uvicorn==0.54.0
 jinja2==3.1.6
 # FastAPI doesn't cap these, so pin them too:
-starlette==1.7.0
+starlette==1.8.0
 pydantic==2.14.1
 
 # Single sign-on:
@@ -10,7 +10,7 @@ fastapi_sso==0.23.0
 PyJWT==2.15.1
 
 # Database:
-tortoise-orm==1.1.8
+tortoise-orm==1.1.9
 asyncpg==0.32.0
 
 # Background tasks:

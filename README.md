@@ -31,67 +31,70 @@ I built this system in just three days with almost no prior knowledge of web des
 
 ## Installation
 
-Requires Python 3.11 or newer.
-
 1. Clone the repository:
     ```bash
     git clone https://github.com/carlosplanchon/nanosaas.git
     cd nanosaas
     ```
 
-2. Set up the environment:
+2. Create the `config.toml` file in the root directory, from the provided template:
+    ```bash
+    cp config_template.toml config.toml
+    ```
+    Then fill in the `[api]` section:
+    ```toml
+    [api]
+    # --- Internal Keys --- #
+    JWT_SIGNING_SECRET_KEY = "your_secret_key"  # Used to sign JWTs; ensure this is a strong, secret key, at least 32 characters long.
+
+    # --- Third parties keys --- #
+    GOOGLE_CLIENT_ID = "your_google_client_id"
+    GOOGLE_CLIENT_SECRET = "your_google_client_secret"
+    GOOGLE_REDIRECT_URI = "http://127.0.0.1:8000/auth/callback"  # Must be an authorized redirect URI of your Google OAuth client.
+    ```
+    You can generate `JWT_SIGNING_SECRET_KEY` with `python3 scripts/generate_jwt_secret_key.py`. The rest of the template already works with Docker: `[database]` and `[celery]` point to the PostgreSQL and Redis of `compose.yaml`, and `ROOT_PATH` is empty, to serve the app at the root.
+
+3. Start the app with Docker Compose:
+    ```bash
+    docker compose up --build
+    ```
+    It runs PostgreSQL, Redis, the backend and a Celery worker, and serves the app at `http://127.0.0.1:8000`, only to this machine. Add `-d` to run it in the background.
+    - After changing the code, run the same command again. After changing `config.toml`, run `docker compose restart api worker`.
+    - The data is kept in Docker volumes, so it survives restarts. `docker compose down -v` deletes it.
+
+### Without Docker
+
+Requires Python 3.11 or newer, PostgreSQL and Redis.
+
+1. Set up the environment:
     ```bash
     python3 -m venv .venv
     source .venv/bin/activate
     pip install -r requirements.txt
     ```
 
-3. Configure the `config.toml` file:
-    - Create it in the root directory from the provided template:
-        ```bash
-        cp config_template.toml config.toml
-        ```
-    - Fill in the required fields:
-        ```toml
-        [app]
-        ROOT_PATH = ""  # Sub-path the app is served under, without slashes (e.g. "nanosaas"). Leave it empty to serve the app at the root.
+2. In `config.toml`, point `[database]` and `[celery]` to your PostgreSQL and Redis:
+    ```toml
+    [database]
+    DB_HOST = "your_db_host"
+    DB_PORT = 5432  # Ensure this is an integer.
+    DB_NAME = "your_database_name"
+    DB_USERNAME = "your_db_username"
+    DB_PASSWORD = "your_db_password"
 
-        [api]
-        # --- Internal Keys --- #
-        JWT_SIGNING_SECRET_KEY = "your_secret_key"  # Used to sign JWTs; ensure this is a strong, secret key, at least 32 characters long.
+    [celery]
+    # Local Redis:
+    broker="redis://127.0.0.1:6379/0"
+    backend="redis://127.0.0.1:6379/0"
+    ```
+    The tables are created automatically when the backend starts. To run Redis in Docker: `docker run -p 127.0.0.1:6379:6379 redis`. Binding the port to `127.0.0.1` keeps Redis reachable only from this machine: ports published by Docker skip firewalls like ufw.
 
-        # --- Third parties keys --- #
-        GOOGLE_CLIENT_ID = "your_google_client_id"
-        GOOGLE_CLIENT_SECRET = "your_google_client_secret"
-        GOOGLE_REDIRECT_URI = "http://127.0.0.1:8000/auth/callback"  # Must be an authorized redirect URI of your Google OAuth client.
-
-        [database]
-        DB_HOST = "your_db_host"
-        DB_PORT = 5432  # Ensure this is an integer.
-        DB_NAME = "your_database_name"
-        DB_USERNAME = "your_db_username"
-        DB_PASSWORD = "your_db_password"
-
-        [celery]
-        # Local Redis:
-        broker="redis://127.0.0.1:6379/0"
-        backend="redis://127.0.0.1:6379/0"
-        # Optional, in seconds: how long a task can wait in the queue, and how long it can run.
-        queue_timeout = 600
-        time_limit = 600
-        ```
-    - Replace placeholders with your actual values. You can generate `JWT_SIGNING_SECRET_KEY` with `python scripts/generate_jwt_secret_key.py`.
-
-4. Run the services:
-    - **PostgreSQL**: Make sure PostgreSQL is running and configured. The tables are created automatically when the backend starts.
-    - **Redis**: Start Redis (e.g., using Docker: `docker run -p 127.0.0.1:6379:6379 redis`). Binding the port to `127.0.0.1` keeps Redis reachable only from this machine: ports published by Docker skip firewalls like ufw.
-
-5. Start the backend:
+3. Start the backend:
     ```bash
     uvicorn main_api:app --reload
     ```
 
-6. Start the Celery worker in another terminal, with the virtual environment activated:
+4. Start the Celery worker in another terminal, with the virtual environment activated:
     ```bash
     celery -A celery_task worker --loglevel=info
     ```
@@ -122,7 +125,7 @@ Run both commands from the repository root: `config.toml`, the templates and the
    The `api_key` query parameter still works for older clients, but avoid it: URLs end up in server and proxy logs. The interactive docs at `/docs` list every route.
 
    The page shows the whole key only when you generate it: the database keeps just its first characters and a hash of it.
-5. Each user starts with a predefined number of credits (25 by default, set in `web/db_models.py`). A credit is reserved when a task is queued and given back if the task fails, so only successful tasks are charged. If credits run out, the user will need to wait or request more credits.
+5. Each user starts with a predefined number of credits (25 by default, set in `web/db_models.py`). A credit is reserved when a task is queued and given back if the task fails, so only successful tasks are charged. When credits run out, the user can't start more tasks until you add credits in the database, for example with `UPDATE account SET credits = credits + 25 WHERE email = 'user@example.com';`. With Docker, `docker compose exec postgres psql -U nanosaas` opens a database shell.
 
    A task that waits in the queue longer than `queue_timeout` seconds is dropped, and one that runs longer than `time_limit` seconds is stopped (10 minutes each by default, set in `config.toml`): either way it fails and its credit comes back. A task that never ends, for example because its worker died, fails the same way once both limits and one more minute have passed.
 6. Customize your tasks by modifying the `celery_task.py` file. For example, the included `divide` task simulates a long-running operation in `run_divide()`:
@@ -160,7 +163,7 @@ Run both commands from the repository root: `config.toml`, the templates and the
 
 - To monitor tasks:
     - Use **Flower** for Celery monitoring: install it with `pip install flower`, then run `celery -A celery_task flower --port=5555`.
-    - Use the Celery TUI monitor: `celery -A celery_task events`.
+    - Use the Celery TUI monitor: `celery -A celery_task events`. With Docker, run it in the worker's container: `docker compose exec worker celery -A celery_task events`.
 - The database tables are created automatically when the backend starts (`generate_schemas=True` in `main_api.py`). For migrations, `shared.py` already has a `TORTOISE_ORM` config for **Aerich** (`pip install aerich`).
 - `generate_schemas` only creates missing tables, so a database created before API keys became unique doesn't get their index. Add it by hand:
     ```sql
@@ -184,7 +187,7 @@ pytest
 
 They take a minute or two: the example task waits 5 seconds, and with the broker down Celery retries for a while before giving up.
 
-GitHub Actions runs them with Python 3.11 and 3.15 on every push to `main` and on every pull request (`.github/workflows/tests.yml`).
+GitHub Actions runs them with Python 3.11 and 3.15 on every push to `main` and on every pull request (`.github/workflows/tests.yml`). It also starts the app with Docker Compose and runs two tasks through the API.
 
 ---
 
