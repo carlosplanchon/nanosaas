@@ -16,6 +16,7 @@ from taskiq_redis.exceptions import ResultIsMissingError
 from tortoise import Tortoise
 
 from tests.helpers import insert_task, task_row, wait_for_row
+from web.db_models import TaskError
 
 pytestmark = [pytest.mark.anyio, pytest.mark.usefixtures("worker")]
 
@@ -141,8 +142,14 @@ async def test_a_task_that_fails_while_the_api_reads_it_gives_its_credit_back(
         ("42", ("SUCCESS", "42")),
         (failed(ZeroDivisionError("division by zero")), ("FAILURE", {**ERROR, "error": "ZeroDivisionError"})),
         (failed(ErrorTheApiDoesNotKnow("details")), ("FAILURE", {**ERROR, "error": "ErrorTheApiDoesNotKnow"})),
+        # Only a TaskError keeps its message: it's for the user.
+        (failed(TaskError("Can't divide by zero.")),
+         ("FAILURE", {"status": "error", "message": "Can't divide by zero.", "error": "TaskError"})),
     ],
-    ids=["datetime", "decimal-and-uuid", "text", "text-that-looks-like-json", "failure", "unknown-failure"],
+    ids=[
+        "datetime", "decimal-and-uuid", "text", "text-that-looks-like-json", "failure", "unknown-failure",
+        "task-error",
+    ],
 )
 async def test_results_are_saved_as_json(result, saved, db, account, anon, taskiq_client):
     task_id = await insert_task(db, account)

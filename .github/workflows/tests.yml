@@ -92,7 +92,7 @@ jobs:
             task=$(request /api/task/divide --header "Content-Type: application/json" --data "{\"x\": $1, \"y\": $2}" | jq -r .id)
             for _ in $(seq 30); do
               details=$(request "/api/task_details/$task")
-              [ "$(jq -r .status <<< "$details")" = SUCCESS ] && break
+              [ "$(jq -r .status <<< "$details")" != PENDING ] && break
               sleep 1
             done
             jq -c .result <<< "$details"
@@ -101,10 +101,10 @@ jobs:
           result=$(divide 10 4)
           echo "10 / 4: $result"
           [ "$result" = 2.5 ]
-          # The worker gives this one's credit back.
+          # It fails with a TaskError, and the worker gives its credit back.
           result=$(divide 1 0)
           echo "1 / 0: $result"
-          [ "$(jq -r .status <<< "$result")" = error ]
+          [ "$(jq -r .error <<< "$result")" = TaskError ]
           credits=$(request /api/user_credits | jq .credits)
           echo "Credits: $credits"
           [ "$credits" = 24 ]

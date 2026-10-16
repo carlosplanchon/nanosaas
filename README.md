@@ -106,7 +106,7 @@ Requires Python 3.11 or newer, PostgreSQL and Redis 6 or newer.
     ```bash
     taskiq worker taskiq_task:broker --receiver taskiq_task:Receiver
     ```
-    `--receiver` makes it drop the tasks that waited in the queue longer than `queue_timeout`.
+    `--receiver` makes it run each task once at most, and drop the tasks that waited in the queue longer than `queue_timeout`.
 
 Run both commands from the repository root: `config.toml`, the templates and the static files are loaded from the current directory.
 
@@ -157,26 +157,19 @@ Without `DOMAIN`, Caddy serves `https://localhost`, with a certificate of its ow
 
    A task that waits in the queue longer than `queue_timeout` seconds is dropped, failing as `TaskExpired`, and one that runs longer than `time_limit` seconds is stopped, failing as `TimeoutError` (10 minutes each by default, set in `config.toml`): either way its credit comes back. A task that never ends, for example because its worker died, fails the same way, as `TaskLost`, once both limits and one more minute have passed.
 
+   A task runs once at most. When Redis queues a task but its reply to the backend is lost, redis-py sends the task again, and when there's no reply at all, the backend gives the task up and its credit back, though Redis may have queued it. So the worker marks each task as started in the task history before running it, and skips the copies of a task that already started, and the tasks given up.
+
    TaskIQ stops a task by cancelling it, which only works while the task awaits something. Blocking code, like `time.sleep()` or a long computation, can't be stopped, and holds up the worker's other tasks: use async libraries, or run it with `await asyncio.to_thread(...)`. In a thread, the task fails at `time_limit`, but the thread keeps running until it ends.
 6. Add your own tasks in `taskiq_task.py`. The included `divide` task simulates a long-running operation:
     ```python
     @broker.task(task_name="divide")
     async def divide(x: int, y: int, user_id: str):
         """Divide x by y. It waits 5 seconds first, like a long-running task."""
-        try:
-            await asyncio.sleep(5)  # Simulate a long-running operation
-            result: float = x / y
-        except Exception as e:
-            # The credit was reserved when the task was queued, and only
-            # successful runs are charged: give it back.
-            await Account.refund_credit(user_id)
-            return {
-                "status": "error",
-                "message": "An unexpected error occurred",
-                "error": str(e),
-            }
-
-        return result
+        await asyncio.sleep(5)  # Simulate a long-running operation
+        if y == 0:
+            # It fails, so its credit comes back, and the user sees this message.
+            raise TaskError("Can't divide by zero.")
+        return x / y
     ```
    To add a task, write it in `taskiq_task.py`, as an async function with `@broker.task(task_name=...)`. For example, one that squares a number:
     ```python
@@ -187,7 +180,7 @@ Without `DOMAIN`, Caddy serves `https://localhost`, with a certificate of its ow
     ```
    That's all: the panel lists every task in `taskiq_task.py`, with its docstring and an input for each parameter, and the API starts it at `/api/task/square`, which `/docs` shows too. The parameters are checked against their type hints before the task is queued. Besides them, every task gets `user_id`, the user's Google ID, which users can't set. The name is saved as the task's type in the history, so keep it under 50 characters and don't change it once the task has run. Users can start any task in `taskiq_task.py`, so don't put tasks there that they shouldn't run.
 
-   The tasks can use the database through the models in `web/db_models.py`: the worker connects to it when it starts. When a task ends, the worker saves its status and result in the task history. If the task raises an exception, it ends as FAILURE and its credit is given back automatically; if it catches the error and returns a result instead, as `divide` does, call `Account.refund_credit(user_id)` yourself. If your tasks take longer than 10 minutes, raise `time_limit`.
+   The tasks can use the database through the models in `web/db_models.py`: the worker connects to it when it starts. When a task ends, the worker saves its status and result in the task history. If the task raises an exception, it ends as FAILURE and its credit is given back. Only the exception's type is saved, since its message may expose details of your servers: to tell the user why the task failed, raise `TaskError` with a message, as `divide` does, and the message is saved too. Don't catch an error to return it as the result instead: the task would end as SUCCESS, and be charged. If your tasks take longer than 10 minutes, raise `time_limit`.
 
    Return plain Python values (dicts, lists, numbers or strings): TaskIQ turns them into JSON. Don't return `json.dumps(...)`: the result would be saved as a string, and the API would show it with escaped quotes.
 7. Customize the pages in `web/templates/`. Put images, icons and other static files in `web/static/`: they are served at `/web/static/`. In the templates, start their URLs with `{{ root_prefix }}` so they also work with a `ROOT_PATH`, as the logo in `login.html` does.
@@ -204,7 +197,7 @@ Without `DOMAIN`, Caddy serves `https://localhost`, with a certificate of its ow
     tortoise -c shared.TORTOISE_ORM makemigrations
     ```
     Then restart the backend to apply it (with Docker, `docker compose up --build`). The tests fail if the models have changes without a migration.
-- A database created before the migrations is only recorded as migrated the first time this version starts: its tables don't change. If it's from before API keys became unique, add their index by hand:
+- A database created before the migrations already has the tables of the first one: the first time this version starts, that migration is only recorded as applied, and the later ones are applied as usual. If it's from before API keys became unique, add their index by hand:
     ```sql
     ALTER TABLE account ADD CONSTRAINT account_api_key_key UNIQUE (api_key);
     ```

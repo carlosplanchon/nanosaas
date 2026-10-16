@@ -6,7 +6,7 @@ import json
 from pydantic_core import to_jsonable_python
 
 from tortoise.models import Model
-from tortoise import fields
+from tortoise import fields, timezone
 from tortoise.expressions import F
 from tortoise.transactions import in_transaction
 
@@ -68,6 +68,13 @@ class Account(Model):
         )
 
 
+class TaskError(Exception):
+    """
+    Raised by a task to fail with a message for the user: it's saved
+    with the task, while other exceptions only keep their type.
+    """
+
+
 class TaskHistory(Model):
     id = fields.IntField(primary_key=True)
     user = fields.ForeignKeyField(
@@ -81,9 +88,45 @@ class TaskHistory(Model):
     status = fields.CharField(max_length=50, default="PENDING")
     result = fields.JSONField(null=True)  # Store task results or error details
     created_at = fields.DatetimeField(auto_now_add=True)
+    # When a worker took the task from the queue (see start()).
+    started_at = fields.DatetimeField(null=True)
 
     def __str__(self):
         return f"{self.task_type} - {self.task_id}"
+
+    @classmethod
+    async def start(cls, task_id: str) -> bool:
+        """
+        Mark a pending task as started, only the first time.
+
+        The worker calls this before it runs a task. Redis can queue a
+        task twice, when it runs the LPUSH but the reply is lost and
+        redis-py sends it again, or queue a task the API gave up for the
+        same reason (see give_up()). Only the first copy of a pending
+        task starts, so it runs once.
+        Returns False if the task has no pending row or already started.
+        """
+        updated = await cls.filter(
+            task_id=task_id, status="PENDING", started_at__isnull=True
+        ).update(started_at=timezone.now())
+        return updated == 1
+
+    @classmethod
+    async def give_up(cls, task_id: str, google_id: str) -> bool:
+        """
+        Delete a task that couldn't be queued and give its credit back,
+        unless a worker already started it: then Redis did queue it, and
+        only the reply to the API was lost.
+        Returns False if a worker started it.
+        """
+        async with in_transaction():
+            deleted = await cls.filter(
+                task_id=task_id, status="PENDING", started_at__isnull=True
+            ).delete()
+            if deleted:
+                await Account.refund_credit(google_id)
+
+        return deleted == 1
 
     @classmethod
     async def finish(cls, task_id: str, result=None, error: BaseException | None = None) -> bool:
@@ -98,10 +141,10 @@ class TaskHistory(Model):
         """
         if error is not None:
             # Keep only the exception's type: its message may expose
-            # details of the servers.
+            # details of the servers. A TaskError's is for the user.
             result = {
                 "status": "error",
-                "message": "The task failed",
+                "message": str(error) if isinstance(error, TaskError) else "The task failed",
                 "error": type(error).__name__,
             }
 

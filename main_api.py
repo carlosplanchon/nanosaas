@@ -41,6 +41,7 @@ from tortoise.contrib.fastapi import RegisterTortoise, tortoise_exception_handle
 from tortoise.exceptions import DoesNotExist
 from tortoise.migrations.api import migrate
 from tortoise.migrations.recorder import MigrationRecorder
+from tortoise.transactions import in_transaction
 
 from fastapi.staticfiles import StaticFiles
 
@@ -459,13 +460,14 @@ async def start_task(account: Account, task: AsyncTaskiqDecoratedTask, parameter
     the task fails, so only successful runs are charged.
     """
     await refresh_overdue_tasks(account.google_id)
-    if not await Account.reserve_credit(account.google_id):
-        raise HTTPException(status_code=403, detail="Not enough credits")
 
     task_id = str(uuid.uuid4())
-    try:
-        # Save the task in history before queueing it, so the worker
-        # always finds its row when it saves the result.
+    # The credit and the row together: every credit taken has a pending
+    # row, which gives it back if the task fails or gets lost. The row is
+    # saved before the task is queued, so the worker always finds it.
+    async with in_transaction():
+        if not await Account.reserve_credit(account.google_id):
+            raise HTTPException(status_code=403, detail="Not enough credits")
         await TaskHistory.create(
             user=account,
             task_id=task_id,
@@ -474,23 +476,24 @@ async def start_task(account: Account, task: AsyncTaskiqDecoratedTask, parameter
             status="PENDING"
         )
 
+    try:
         # Queue the TaskIQ task
         await task.kicker().with_task_id(task_id).with_labels(
             timeout=TIME_LIMIT,
             queue_deadline=time.time() + QUEUE_TIMEOUT
         ).kiq(**parameters, user_id=account.google_id)
     except Exception as e:
-        # The task never reached the queue: drop its row and give the
-        # credit back.
-        await TaskHistory.filter(task_id=task_id).delete()
-        await Account.refund_credit(account.google_id)
-
         # The error goes to the log: it may show where the servers are.
         print(f"Task initiation failed for {task_id}: {e.__cause__ or e}")
-        raise HTTPException(
-            status_code=500,
-            detail="Task initiation failed"
-        )
+
+        # Redis may have queued it anyway, and only lost its reply. Give
+        # the task up, unless a worker already started it.
+        if await TaskHistory.give_up(task_id, account.google_id):
+            raise HTTPException(
+                status_code=500,
+                detail="Task initiation failed"
+            )
+        print(f"Task {task_id} was queued after all: a worker started it.")
 
     return TaskInitOut(id=task_id, message="Task started successfully")
 

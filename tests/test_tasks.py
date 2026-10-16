@@ -25,7 +25,10 @@ async def test_failed_task_gives_the_credit_back(account, user, anon):
     r = await anon.get("/api/task/divide/1/0", params={"api_key": account.api_key})
     assert r.status_code == 200
     data = await wait_until_done(user, r.json()["id"])
-    assert data["result"]["status"] == "error"
+    # The message of a TaskError is for the user, so it's saved.
+    assert (data["status"], data["result"]) == (
+        "FAILURE", {"status": "error", "message": "Can't divide by zero.", "error": "TaskError"}
+    )
     assert await account.credits() == 5
 
 
@@ -175,9 +178,8 @@ async def test_regenerating_the_api_key_does_not_undo_credit_changes(account, us
     stop.set()
     await asyncio.gather(*loops)
 
-    # The divisions by zero end as SUCCESS with an error as their result,
-    # and only the 10 real results are charged.
-    assert [d["status"] for d in done] == ["SUCCESS"] * 15
+    # The divisions by zero fail, and only the 10 real results are charged.
+    assert [d["status"] for d in done] == ["SUCCESS"] * 10 + ["FAILURE"] * 5
     assert sum(d["result"] == 2.0 for d in done) == 10
     assert await account.credits() == 10
 
