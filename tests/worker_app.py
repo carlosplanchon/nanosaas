@@ -1,8 +1,11 @@
 """
 TaskIQ broker for the tests' worker: the app's tasks, plus one that always
-raises, to test what happens to a task that fails with an exception, and
-one more to start through start_task().
+raises, to test what happens to a task that fails with an exception, one
+more to start through start_task(), and one with a parameter of each kind,
+for the panel's inputs.
 """
+from pydantic import BaseModel
+
 from taskiq_task import broker
 
 
@@ -14,3 +17,27 @@ async def explode():
 @broker.task(task_name="square")
 async def square(n: int, user_id: str):
     return n * n
+
+
+class Point(BaseModel):
+    x: int
+    y: int
+
+
+@broker.task(task_name="every_kind")
+async def every_kind(
+    flag: bool,
+    numbers: list[int],
+    options: dict[str, int],
+    point: Point,
+    either: int | str,
+    limit: int | None = None,
+    ratio: float = 0.5,
+    *,
+    user_id: str,
+):
+    """Return its parameters, one of each kind."""
+    return {
+        "flag": flag, "numbers": numbers, "options": options, "point": point.model_dump(),
+        "either": either, "limit": limit, "ratio": ratio,
+    }

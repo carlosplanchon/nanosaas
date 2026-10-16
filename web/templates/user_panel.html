@@ -56,7 +56,15 @@
                 <template x-for="parameter in chosenTask()?.parameters ?? []" :key="parameter.name">
                     <label class="block text-gray-700">
                         <span x-text="parameter.name"></span>:
-                        <input :type="isNumber(parameter) ? 'number' : 'text'" x-model="values[parameter.name]" class="mt-1 p-2 border rounded-md w-full md:w-48">
+                        <template x-if="parameter.type === 'boolean'">
+                            <input type="checkbox" x-model="values[parameter.name]">
+                        </template>
+                        <template x-if="isJson(parameter)">
+                            <textarea x-model="values[parameter.name]" placeholder="JSON" class="mt-1 p-2 border rounded-md w-full md:w-48"></textarea>
+                        </template>
+                        <template x-if="parameter.type !== 'boolean' && !isJson(parameter)">
+                            <input :type="isNumber(parameter) ? 'number' : 'text'" x-model="values[parameter.name]" class="mt-1 p-2 border rounded-md w-full md:w-48">
+                        </template>
                     </label>
                 </template>
                 <button x-on:click="startTask" class="bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded-md">
@@ -121,6 +129,28 @@
         // The JSON schema types that get a number input.
         function isNumber(parameter) {
             return ['integer', 'number'].includes(parameter.type);
+        }
+
+        // And the ones typed as JSON: lists, and objects like dicts and models.
+        function isJson(parameter) {
+            return ['array', 'object'].includes(parameter.type);
+        }
+
+        // Text that isn't JSON goes as it is, and the server says what's wrong with it.
+        function parseJson(text) {
+            try {
+                return JSON.parse(text);
+            } catch {
+                return text;
+            }
+        }
+
+        // What a parameter's input starts with: its default, if it has one, as
+        // JSON for lists and objects. A checkbox without one starts unchecked.
+        function initialValue(parameter) {
+            if (parameter.type === 'boolean') return parameter.default ?? false;
+            if (parameter.default === null || parameter.default === undefined) return '';
+            return isJson(parameter) ? JSON.stringify(parameter.default) : parameter.default;
         }
 
         function taskManager() {
@@ -202,10 +232,9 @@
                     return this.taskTypes.find(taskType => taskType.name === this.chosen);
                 },
 
-                // Each parameter starts with its default, if it has one.
                 resetValues() {
                     const parameters = this.chosenTask()?.parameters ?? [];
-                    this.values = Object.fromEntries(parameters.map(parameter => [parameter.name, parameter.default ?? '']));
+                    this.values = Object.fromEntries(parameters.map(parameter => [parameter.name, initialValue(parameter)]));
                 },
 
                 async fetchTaskTypes() {
@@ -228,12 +257,15 @@
                     const taskType = this.chosenTask();
                     if (!taskType) return;
 
-                    // Numbers go as numbers, and empty inputs are left out, so the task's defaults apply.
+                    // Numbers go as numbers, lists and objects as the JSON typed in, and
+                    // empty inputs are left out, so the task's defaults apply.
                     const parameters = {};
                     for (const parameter of taskType.parameters) {
-                        const value = this.values[parameter.name];
+                        let value = this.values[parameter.name];
                         if (value === '' || value === null || value === undefined) continue;
-                        parameters[parameter.name] = isNumber(parameter) ? Number(value) : value;
+                        if (isNumber(parameter)) value = Number(value);
+                        if (isJson(parameter)) value = parseJson(value);
+                        parameters[parameter.name] = value;
                     }
 
                     // Another task or other parameters: a new key.
@@ -258,7 +290,8 @@
                             alert('Not enough credits');
                         } else if (response.status === 422) {
                             const data = await response.json();
-                            alert('Check the parameters: ' + data.detail.map(error => `${error.loc.at(-1)}: ${error.msg}`).join(', '));
+                            // Where the error is, like "numbers.1" for an item of a list.
+                            alert('Check the parameters: ' + data.detail.map(error => `${error.loc.slice(1).join('.')}: ${error.msg}`).join(', '));
                         } else {
                             alert('Failed to start task');
                         }

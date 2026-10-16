@@ -580,18 +580,34 @@ async def refresh_overdue_tasks(google_id: str) -> None:
     await refresh_tasks(overdue)
 
 
+def input_type(schema: dict, definitions: dict) -> str:
+    """
+    The JSON type of a parameter, which picks its input in the panel: the
+    type of its schema, of the one it references (a model's is "object"),
+    or of the one besides null in an optional parameter's. "string" when
+    there isn't one, as in a union of several types.
+    """
+    if "$ref" in schema:
+        return input_type(definitions[schema["$ref"].rsplit("/", 1)[-1]], definitions)
+    options = [option for option in schema.get("anyOf", []) if option.get("type") != "null"]
+    if len(options) == 1:
+        return input_type(options[0], definitions)
+    return schema.get("type", "string")
+
+
 @app.get("/user/tasks")
 async def list_tasks(user: OpenID = Depends(get_logged_user)):
     """The tasks the user can start, with their description and parameters."""
     tasks = []
     for name, task in sorted(broker.get_all_tasks().items()):
-        properties = parameters_model(name).model_json_schema().get("properties", {})
+        schema = parameters_model(name).model_json_schema()
+        definitions = schema.get("$defs", {})
         tasks.append({
             "name": name,
             "description": inspect.getdoc(task.original_func) or "",
             "parameters": [
-                {"name": parameter, "type": schema.get("type", "string"), "default": schema.get("default")}
-                for parameter, schema in properties.items()
+                {"name": parameter, "type": input_type(field, definitions), "default": field.get("default")}
+                for parameter, field in schema.get("properties", {}).items()
             ],
         })
     return tasks

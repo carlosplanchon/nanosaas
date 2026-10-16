@@ -182,7 +182,7 @@ Any Google account can log in, and each new account gets `INITIAL_CREDITS` credi
         """Square n."""
         return n * n
     ```
-   That's all: the panel lists every task in `taskiq_task.py`, with its docstring and an input for each parameter, and the API starts it at `/api/task/square`, which `/docs` shows too. The parameters are checked against their type hints before the task is queued. Besides them, every task gets `user_id`, the user's Google ID, which users can't set. The name is saved as the task's type in the history, so keep it under 50 characters and don't change it once the task has run. Users can start any task in `taskiq_task.py`, so don't put tasks there that they shouldn't run.
+   That's all: the panel lists every task in `taskiq_task.py`, with its docstring and an input for each parameter (a checkbox for a `bool`, and JSON for lists, dicts and Pydantic models), and the API starts it at `/api/task/square`, which `/docs` shows too. The parameters are checked against their type hints before the task is queued. Besides them, every task gets `user_id`, the user's Google ID, which users can't set. The name is saved as the task's type in the history, so keep it under 50 characters and don't change it once the task has run. Users can start any task in `taskiq_task.py`, so don't put tasks there that they shouldn't run.
 
    The tasks can use the database through the models in `web/db_models.py`: the worker connects to it when it starts. When a task ends, the worker saves its status and result in the task history. If the task raises an exception, it ends as FAILURE and its credit is given back. Only the exception's type is saved, since its message may expose details of your servers: to tell the user why the task failed, raise `TaskError` with a message, as `divide` does, and the message is saved too. Don't catch an error to return it as the result instead: the task would end as SUCCESS, and be charged. If your tasks take longer than 10 minutes, raise `time_limit`.
 
@@ -230,7 +230,6 @@ GitHub Actions runs them with Python 3.11 and 3.15 on every push to `main` and o
 ## Known Limitations
 
 - A task whose worker dies isn't run again: it fails as `TaskLost` after its deadline, giving its credit back, and the user has to start it again.
-- The panel only has number and text inputs, so tasks with list or object parameters can only be started through the API.
 - There are no payments: users get `INITIAL_CREDITS` the first time they log in, and more only when you add them with `scripts/add_credits.py`.
 
 ---

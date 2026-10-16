@@ -70,6 +70,25 @@ async def test_the_panel_lists_the_tasks_with_their_parameters(user):
     }]
 
 
+async def test_the_panel_gets_the_input_type_of_each_parameter(app_module):
+    from tests import worker_app  # noqa: F401 (its tasks join the API's broker)
+
+    tasks = {task["name"]: task for task in await app_module.list_tasks(user=None)}
+    parameters = [(p["name"], p["type"], p["default"]) for p in tasks["every_kind"]["parameters"]]
+    assert parameters == [
+        ("flag", "boolean", None),
+        ("numbers", "array", None),
+        ("options", "object", None),
+        # A model's schema is in $defs.
+        ("point", "object", None),
+        # A union of several types has no input of its own.
+        ("either", "string", None),
+        # An optional parameter gets the input of its type.
+        ("limit", "integer", None),
+        ("ratio", "number", 0.5),
+    ]
+
+
 async def test_the_docs_show_each_task_with_its_parameters(anon):
     schema = (await anon.get("/openapi.json")).json()
     operation = schema["paths"]["/api/task/divide"]["post"]
