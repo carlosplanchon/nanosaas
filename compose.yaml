@@ -47,6 +47,12 @@ services:
     ports:
       # Only reachable from this machine: Docker-published ports skip firewalls like ufw.
       - 127.0.0.1:8000:8000
+    healthcheck:
+      # It answers once the migrations are applied. Every second while it starts, then every 30.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/openapi.json', timeout=5)"]
+      interval: 30s
+      start_period: 60s
+      start_interval: 1s
 
   worker:
     <<: *app
@@ -70,7 +76,9 @@ services:
       - caddy-data:/data
       - caddy-config:/config
     depends_on:
-      - api
+      # So it doesn't answer 502 while the API starts.
+      api:
+        condition: service_healthy
     restart: unless-stopped
 
 configs:
