@@ -125,6 +125,8 @@ To serve the app on your domain, run it with [Caddy](https://caddyserver.com/), 
 
 Without `DOMAIN`, Caddy serves `https://localhost`, with a certificate of its own that browsers warn about: that way you can try HTTPS on your machine.
 
+Any Google account can log in, and each new account gets `INITIAL_CREDITS` credits, so on a public server anyone can use them, even with several accounts. To choose who runs tasks, set `INITIAL_CREDITS = 0` in `config.toml` and give credits with `scripts/add_credits.py` (see Usage), once the user has logged in.
+
 ---
 
 ## Usage
@@ -149,7 +151,7 @@ Without `DOMAIN`, Caddy serves `https://localhost`, with a certificate of its ow
    Wrong parameters get a 422 error, without spending a credit. `GET /api/task/divide/10/4` still works for older clients, and so does the `api_key` query parameter, but avoid the latter: URLs end up in server and proxy logs. The interactive docs at `/docs` list every route, and under **tasks**, every task with its description and parameters, where you can also try them.
 
    The page shows the whole key only when you generate it: the database keeps just its first characters and a hash of it.
-5. Each user starts with a predefined number of credits (25 by default, set in `web/db_models.py`). A credit is reserved when a task is queued and given back if the task fails, so only successful tasks are charged. When credits run out, the user can't start more tasks until you add more, giving the email the user logs in with:
+5. Each user starts with `INITIAL_CREDITS` credits, set in `config.toml` (25 by default). A credit is reserved when a task is queued and given back if the task fails, so only successful tasks are charged. When credits run out, the user can't start more tasks until you add more, giving the email the user logs in with:
     ```bash
     docker compose exec api python scripts/add_credits.py user@example.com 25
     ```

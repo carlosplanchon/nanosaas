@@ -62,7 +62,10 @@ def test_login_creates_the_account_once_and_sets_a_secure_cookie(app_module, ser
 
             # The client won't send a Secure cookie over http: set it by hand.
             client.cookies.set("token", r.cookies["token"])
-            assert client.get("/user/credits").json() == {"credits": 25}
+            # INITIAL_CREDITS = 0 in the tests' config: no tasks until someone gives credits.
+            assert client.get("/user/credits").json() == {"credits": 0}
+            r = client.post("/task/divide", json={"x": 1, "y": 1})
+            assert (r.status_code, r.json()) == (403, {"detail": "Not enough credits"})
             assert client.get("/userpanel").status_code == 200
             client.cookies.clear()
 

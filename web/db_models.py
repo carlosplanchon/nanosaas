@@ -22,7 +22,7 @@ class Account(Model):
     picture = fields.CharField(max_length=255)
     provider = fields.CharField(max_length=50)
     created_at = fields.DatetimeField(auto_now_add=True)
-    credits = fields.IntField(default=25)  # Start users with 25 credits
+    credits = fields.IntField(default=25)  # New accounts get INITIAL_CREDITS, set in config.toml
     # The API key itself isn't stored: it's shown once, when generated. This
     # keeps "first 8 characters$SHA-256" of it, in the api_key column. The
     # prefix tells keys apart, and the unique index finds the account.

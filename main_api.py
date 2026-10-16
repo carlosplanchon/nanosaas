@@ -75,6 +75,10 @@ if root_path != "":
 else:
     root_prefix = ""
 
+# The credits of a new account. Any Google account can log in: with 0,
+# users start tasks only once you give them credits (scripts/add_credits.py).
+INITIAL_CREDITS: int = CONFIG["app"].get("INITIAL_CREDITS", 25)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -273,6 +277,7 @@ async def login_callback(request: Request):
             "display_name": openid.display_name,
             "picture": openid.picture,
             "provider": openid.provider,
+            "credits": INITIAL_CREDITS,
         },
     )
 

@@ -1,5 +1,6 @@
 [app]
 ROOT_PATH = ""  # Sub-path the app is served under, without slashes (e.g. "nanosaas"). Leave it empty to serve the app at the root.
+INITIAL_CREDITS = 25  # Credits of each new account. Any Google account can log in: on a public server, use 0 and give credits with scripts/add_credits.py.
 
 [api]
 # --- Internal Keys --- #

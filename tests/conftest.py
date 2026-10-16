@@ -64,14 +64,15 @@ def services():
         )
 
 
-def write_config(path, services, port, root_path="", broker=None, db_name=None, **taskiq):
+def write_config(path, services, port, root_path="", broker=None, db_name=None, initial_credits=None, **taskiq):
     """taskiq: more settings for the [taskiq] section, like time_limit=3."""
     broker = broker or services.redis_url
+    credits = "" if initial_credits is None else f"INITIAL_CREDITS = {initial_credits}\n"
     settings = "".join(f"{key} = {value}\n" for key, value in taskiq.items())
     path.write_text(f"""\
 [app]
 ROOT_PATH = "{root_path}"
-
+{credits}
 [api]
 JWT_SIGNING_SECRET_KEY = "{SECRET}"
 GOOGLE_CLIENT_ID = "test-client-id"
@@ -256,7 +257,8 @@ def short_limits_server(tmp_path_factory, services, server):
 def app_module(tmp_path_factory, services, server):
     """main_api imported in this process, for the tests that stub parts of it."""
     config = tmp_path_factory.mktemp("in-process") / "config.toml"
-    write_config(config, services, port=8000)
+    # New accounts start without credits, as on a public server (see test_auth.py).
+    write_config(config, services, port=8000, initial_credits=0)
     os.environ["NANOSAAS_CONFIG"] = str(config)
     # The templates and the static files are relative to the current directory.
     os.chdir(REPO)
