@@ -67,6 +67,19 @@ async def test_the_panel_lists_the_tasks_with_their_parameters(user):
     }]
 
 
+async def test_the_docs_show_each_task_with_its_parameters(anon):
+    schema = (await anon.get("/openapi.json")).json()
+    operation = schema["paths"]["/api/task/divide"]["post"]
+    assert (operation["summary"], operation["description"], operation["tags"]) == (
+        "Start divide", "Divide x by y. It waits 5 seconds first, like a long-running task.", ["tasks"]
+    )
+    parameters = schema["components"]["schemas"]["divide_parameters"]
+    assert parameters["properties"] == {"x": {"type": "integer", "title": "X"}, "y": {"type": "integer", "title": "Y"}}
+    assert parameters["required"] == ["x", "y"]
+    # The panel's routes stay out of them.
+    assert "/task/divide" not in schema["paths"]
+
+
 async def test_any_task_starts_with_its_parameters_in_json(account, user, anon):
     r = await user.post("/task/divide", json={"x": 10, "y": 4})
     assert r.status_code == 200

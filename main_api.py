@@ -17,8 +17,7 @@ import uuid
 
 from contextlib import asynccontextmanager
 
-from fastapi import Body, FastAPI, Depends, HTTPException, Security, Request
-from fastapi.exceptions import RequestValidationError
+from fastapi import FastAPI, Depends, HTTPException, Security, Request
 
 from fastapi.responses import RedirectResponse
 from fastapi.responses import HTMLResponse
@@ -45,7 +44,7 @@ from tortoise.migrations.recorder import MigrationRecorder
 
 from fastapi.staticfiles import StaticFiles
 
-from pydantic import BaseModel, ConfigDict, ValidationError, create_model
+from pydantic import BaseModel, ConfigDict, create_model
 
 from taskiq import AsyncTaskiqDecoratedTask
 from taskiq_redis.exceptions import ResultIsMissingError
@@ -449,27 +448,6 @@ def parameters_model(task_name: str) -> type[BaseModel]:
     )
 
 
-def checked_task(task_type: str, parameters: dict) -> tuple[AsyncTaskiqDecoratedTask, dict]:
-    """
-    The task called task_type and its parameters, checked before it
-    spends a credit: 404 if there's no such task, 422 if they're wrong.
-    """
-    task = broker.find_task(task_type)
-    if task is None:
-        raise HTTPException(status_code=404, detail="Unknown task")
-
-    try:
-        checked = parameters_model(task_type).model_validate(parameters)
-    except ValidationError as error:
-        # Like FastAPI's own errors, which point to the body.
-        raise RequestValidationError([
-            {**detail, "loc": ("body", *detail["loc"])}
-            for detail in error.errors(include_url=False, include_context=False)
-        ])
-
-    return task, checked.model_dump(mode="json")
-
-
 async def start_task(account: Account, task: AsyncTaskiqDecoratedTask, parameters: dict) -> TaskInitOut:
     """
     Reserve a credit, save the task in history and queue it in TaskIQ,
@@ -575,29 +553,43 @@ async def list_tasks(user: OpenID = Depends(get_logged_user)):
     return tasks
 
 
-# POST because it spends a credit: the SameSite=lax cookie still goes
-# with GET navigations from other sites, so a link could trigger it.
-@app.post("/task/{task_type}", response_model=TaskInitOut)
-async def start_any_task(
-    task_type: str,
-    parameters: dict = Body(default={}),
-    user: OpenID = Depends(get_logged_user)
-        ):
-    """Start any task, with its parameters in a JSON object."""
-    task, parameters = checked_task(task_type, parameters)
-    account = await Account.get(google_id=user.id)
-    return await start_task(account, task, parameters)
+def add_task_routes(name: str, task: AsyncTaskiqDecoratedTask) -> None:
+    """
+    Add the routes that start a task, with its parameters in a JSON
+    object: POST /api/task/<name> for API keys, which /docs shows with
+    the parameters and the docstring, and POST /task/<name> for the
+    panel. FastAPI checks the parameters before they spend a credit.
+    """
+    parameters_type = parameters_model(name)
+
+    async def start_with_api_key(
+        parameters: parameters_type,
+        account: Account = Depends(get_api_key_account)
+            ):
+        return await start_task(account, task, parameters.model_dump(mode="json"))
+
+    # POST because it spends a credit: the SameSite=lax cookie still goes
+    # with GET navigations from other sites, so a link could trigger it.
+    async def start_with_session(
+        parameters: parameters_type,
+        user: OpenID = Depends(get_logged_user)
+            ):
+        account = await Account.get(google_id=user.id)
+        return await start_task(account, task, parameters.model_dump(mode="json"))
+
+    app.add_api_route(
+        f"/api/task/{name}", start_with_api_key, methods=["POST"],
+        response_model=TaskInitOut, name=f"start_{name}_with_api_key", tags=["tasks"],
+        summary=f"Start {name}", description=inspect.getdoc(task.original_func)
+    )
+    app.add_api_route(
+        f"/task/{name}", start_with_session, methods=["POST"],
+        response_model=TaskInitOut, name=f"start_{name}", include_in_schema=False
+    )
 
 
-@app.post("/api/task/{task_type}", response_model=TaskInitOut)
-async def start_any_task_with_api_key(
-    task_type: str,
-    parameters: dict = Body(default={}),
-    account: Account = Depends(get_api_key_account)
-        ):
-    """Start any task using an API key, with its parameters in a JSON object."""
-    task, parameters = checked_task(task_type, parameters)
-    return await start_task(account, task, parameters)
+for task_name, task in sorted(broker.get_all_tasks().items()):
+    add_task_routes(task_name, task)
 
 
 # divide's own routes, still here for the clients that use them.

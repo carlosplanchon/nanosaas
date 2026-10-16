@@ -146,7 +146,7 @@ Without `DOMAIN`, Caddy serves `https://localhost`, with a certificate of its ow
     curl -H "X-API-Key: your_api_key" -H "Content-Type: application/json" -d '{"x": 10, "y": 4}' http://127.0.0.1:8000/api/task/divide
     curl -H "X-API-Key: your_api_key" http://127.0.0.1:8000/api/task_details/your_task_id
     ```
-   Wrong parameters get a 422 error, without spending a credit. `GET /api/task/divide/10/4` still works for older clients, and so does the `api_key` query parameter, but avoid the latter: URLs end up in server and proxy logs. The interactive docs at `/docs` list every route.
+   Wrong parameters get a 422 error, without spending a credit. `GET /api/task/divide/10/4` still works for older clients, and so does the `api_key` query parameter, but avoid the latter: URLs end up in server and proxy logs. The interactive docs at `/docs` list every route, and under **tasks**, every task with its description and parameters, where you can also try them.
 
    The page shows the whole key only when you generate it: the database keeps just its first characters and a hash of it.
 5. Each user starts with a predefined number of credits (25 by default, set in `web/db_models.py`). A credit is reserved when a task is queued and given back if the task fails, so only successful tasks are charged. When credits run out, the user can't start more tasks until you add more, giving the email the user logs in with:
@@ -185,7 +185,7 @@ Without `DOMAIN`, Caddy serves `https://localhost`, with a certificate of its ow
         """Square n."""
         return n * n
     ```
-   That's all: the panel lists every task in `taskiq_task.py`, with its docstring and an input for each parameter, and the API starts it at `/api/task/square`. The parameters are checked against their type hints before the task is queued. Besides them, every task gets `user_id`, the user's Google ID, which users can't set. The name is saved as the task's type in the history, so keep it under 50 characters and don't change it once the task has run. Users can start any task in `taskiq_task.py`, so don't put tasks there that they shouldn't run.
+   That's all: the panel lists every task in `taskiq_task.py`, with its docstring and an input for each parameter, and the API starts it at `/api/task/square`, which `/docs` shows too. The parameters are checked against their type hints before the task is queued. Besides them, every task gets `user_id`, the user's Google ID, which users can't set. The name is saved as the task's type in the history, so keep it under 50 characters and don't change it once the task has run. Users can start any task in `taskiq_task.py`, so don't put tasks there that they shouldn't run.
 
    The tasks can use the database through the models in `web/db_models.py`: the worker connects to it when it starts. When a task ends, the worker saves its status and result in the task history. If the task raises an exception, it ends as FAILURE and its credit is given back automatically; if it catches the error and returns a result instead, as `divide` does, call `Account.refund_credit(user_id)` yourself. If your tasks take longer than 10 minutes, raise `time_limit`.
 
