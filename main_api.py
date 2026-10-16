@@ -17,7 +17,7 @@ import uuid
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Depends, HTTPException, Security, Request
+from fastapi import FastAPI, Depends, Header, HTTPException, Security, Request
 
 from fastapi.responses import RedirectResponse
 from fastapi.responses import HTMLResponse
@@ -454,7 +454,26 @@ def parameters_model(task_name: str) -> type[BaseModel]:
     )
 
 
-async def start_task(account: Account, task: AsyncTaskiqDecoratedTask, parameters: dict) -> TaskInitOut:
+# A value the client picks for each request, like a UUID, and sends again
+# when it retries the request: then it gets the task the request started.
+IdempotencyKey = typing.Annotated[str | None, Header(
+    alias="Idempotency-Key",
+    min_length=1,
+    max_length=255,
+    description=(
+        "A value you pick for this request, like a UUID. If you send the request again "
+        "with it, for example after a timeout, you get the task it started, instead "
+        "of starting and paying for another one."
+    ),
+)]
+
+
+async def start_task(
+    account: Account,
+    task: AsyncTaskiqDecoratedTask,
+    parameters: dict,
+    idempotency_key: str | None = None
+) -> TaskInitOut:
     """
     Reserve a credit, save the task in history and queue it in TaskIQ,
     with its parameters and the user's ID. Shared by every route that
@@ -463,6 +482,9 @@ async def start_task(account: Account, task: AsyncTaskiqDecoratedTask, parameter
     The credit is taken before queueing, so pending tasks can never
     add up to more than the account's credits. It is given back if
     the task fails, so only successful runs are charged.
+
+    A request with the idempotency key of a task the account already
+    started gets that task, without paying again.
     """
     await refresh_overdue_tasks(account.google_id)
 
@@ -471,6 +493,19 @@ async def start_task(account: Account, task: AsyncTaskiqDecoratedTask, parameter
     # row, which gives it back if the task fails or gets lost. The row is
     # saved before the task is queued, so the worker always finds it.
     async with in_transaction():
+        if idempotency_key is not None:
+            # Lock the account until this ends, so a retry sent meanwhile
+            # waits here, and then finds this request's task.
+            await Account.select_for_update().get(id=account.id)
+            started = await TaskHistory.get_or_none(user=account, idempotency_key=idempotency_key)
+            if started is not None:
+                if (started.task_type, started.parameters) != (task.task_name, parameters):
+                    raise HTTPException(
+                        status_code=422,
+                        detail="This Idempotency-Key was used for another task or other parameters"
+                    )
+                return TaskInitOut(id=started.task_id, message="Task started successfully")
+
         if not await Account.reserve_credit(account.google_id):
             raise HTTPException(status_code=403, detail="Not enough credits")
         await TaskHistory.create(
@@ -478,7 +513,8 @@ async def start_task(account: Account, task: AsyncTaskiqDecoratedTask, parameter
             task_id=task_id,
             task_type=task.task_name,
             parameters=parameters,
-            status="PENDING"
+            status="PENDING",
+            idempotency_key=idempotency_key
         )
 
     try:
@@ -572,18 +608,20 @@ def add_task_routes(name: str, task: AsyncTaskiqDecoratedTask) -> None:
 
     async def start_with_api_key(
         parameters: parameters_type,
+        idempotency_key: IdempotencyKey = None,
         account: Account = Depends(get_api_key_account)
             ):
-        return await start_task(account, task, parameters.model_dump(mode="json"))
+        return await start_task(account, task, parameters.model_dump(mode="json"), idempotency_key)
 
     # POST because it spends a credit: the SameSite=lax cookie still goes
     # with GET navigations from other sites, so a link could trigger it.
     async def start_with_session(
         parameters: parameters_type,
+        idempotency_key: IdempotencyKey = None,
         user: OpenID = Depends(get_logged_user)
             ):
         account = await Account.get(google_id=user.id)
-        return await start_task(account, task, parameters.model_dump(mode="json"))
+        return await start_task(account, task, parameters.model_dump(mode="json"), idempotency_key)
 
     app.add_api_route(
         f"/api/task/{name}", start_with_api_key, methods=["POST"],

@@ -90,6 +90,12 @@ class TaskHistory(Model):
     created_at = fields.DatetimeField(auto_now_add=True)
     # When a worker took the task from the queue (see start()).
     started_at = fields.DatetimeField(null=True)
+    # The Idempotency-Key of the request that started the task, if it had
+    # one: the account's requests with the same key get this task.
+    idempotency_key = fields.CharField(max_length=255, null=True)
+
+    class Meta:
+        unique_together = (("user", "idempotency_key"),)
 
     def __str__(self):
         return f"{self.task_type} - {self.task_id}"

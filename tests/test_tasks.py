@@ -79,6 +79,10 @@ async def test_the_docs_show_each_task_with_its_parameters(anon):
     parameters = schema["components"]["schemas"]["divide_parameters"]
     assert parameters["properties"] == {"x": {"type": "integer", "title": "X"}, "y": {"type": "integer", "title": "Y"}}
     assert parameters["required"] == ["x", "y"]
+    # And the Idempotency-Key header, to retry a request safely.
+    assert [(p["name"], p["in"], p["required"]) for p in operation["parameters"]] == [
+        ("Idempotency-Key", "header", False)
+    ]
     # The panel's routes stay out of them.
     assert "/task/divide" not in schema["paths"]
 

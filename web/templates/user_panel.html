@@ -132,6 +132,10 @@
                 values: {},
                 tasks: [],
                 credits: 0, // Initialize credits
+                // The task being started, and the Idempotency-Key it's sent with: sent
+                // again before an answer, after a double click or a network error, it
+                // gets the same task instead of starting and paying for another one.
+                sending: null,
 
                 init() {
                     this.fetchTaskTypes();
@@ -232,12 +236,20 @@
                         parameters[parameter.name] = isNumber(parameter) ? Number(value) : value;
                     }
 
+                    // Another task or other parameters: a new key.
+                    const request = JSON.stringify([taskType.name, parameters]);
+                    if (this.sending?.request !== request) {
+                        this.sending = { request, key: crypto.randomUUID() };
+                    }
+
                     try {
                         const response = await fetch(`{{ root_prefix }}/task/${encodeURIComponent(taskType.name)}`, {
                             method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
+                            headers: { 'Content-Type': 'application/json', 'Idempotency-Key': this.sending.key },
                             body: JSON.stringify(parameters)
                         });
+                        // Answered: starting it again starts another task.
+                        this.sending = null;
                         if (sessionExpired(response)) return;
 
                         if (response.ok) {

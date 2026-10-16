@@ -9,6 +9,7 @@ import contextlib
 import re
 import threading
 import time
+import uuid
 
 import pytest
 
@@ -147,6 +148,27 @@ async def test_a_task_given_up_does_not_run_though_redis_queued_it(lossy_redis, 
     await wait_for_skips(worker, task_id, 3)
     assert (runs(worker, task_id), skips(worker, task_id)) == (0, 3)
     assert await account.credits() == 5
+
+
+async def test_a_request_given_up_starts_its_task_when_sent_again_with_its_key(
+    lossy_redis, start_server, start_worker, db
+):
+    server = start_server("lossy", broker=lossy_redis.url)
+    account = await create_account(db)
+    headers = {"Idempotency-Key": str(uuid.uuid4())}
+
+    async with client_for(server, account.cookie) as user:
+        lossy_redis.drops = 3
+        r = await user.post("/task/divide", json={"x": 6, "y": 3}, headers=headers)
+        assert r.status_code == 500
+        # The API gave the task up, so its key has no task yet: sent again, the request starts one.
+        r = await user.post("/task/divide", json={"x": 6, "y": 3}, headers=headers)
+    assert r.status_code == 200
+
+    start_worker(server)
+    assert await wait_for_row(db, r.json()["id"], "SUCCESS") == ("SUCCESS", 2.0)
+    assert await account.credits() == 4
+    assert await db.fetchval("SELECT count(*) FROM taskhistory WHERE user_id = $1", account.id) == 1
 
 
 async def test_a_task_a_worker_started_is_not_given_up(lossy_redis, start_server, start_worker, db):

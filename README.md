@@ -150,6 +150,8 @@ Any Google account can log in, and each new account gets `INITIAL_CREDITS` credi
     ```
    Wrong parameters get a 422 error, without spending a credit. `GET /api/task/divide/10/4` still works for older clients, and so does the `api_key` query parameter, but avoid the latter: URLs end up in server and proxy logs. The interactive docs at `/docs` list every route, and under **tasks**, every task with its description and parameters, where you can also try them.
 
+   To retry a request safely, for example after a timeout, send it with an `Idempotency-Key` header, with a value you pick for each request, like a UUID. Sent again with the same key, the request gets the task it started, without paying for another one, and if it didn't start one, it starts it then. Reusing a key for another task or other parameters gets a 422 error. The panel does the same, so a double click starts one task.
+
    The page shows the whole key only when you generate it: the database keeps just its first characters and a hash of it.
 5. Each user starts with `INITIAL_CREDITS` credits, set in `config.toml` (25 by default). A credit is reserved when a task is queued and given back if the task fails, so only successful tasks are charged. When credits run out, the user can't start more tasks until you add more, giving the email the user logs in with:
     ```bash
@@ -229,7 +231,6 @@ GitHub Actions runs them with Python 3.11 and 3.15 on every push to `main` and o
 
 - A task whose worker dies isn't run again: it fails as `TaskLost` after its deadline, giving its credit back, and the user has to start it again.
 - The panel only has number and text inputs, so tasks with list or object parameters can only be started through the API.
-- If a client retries a request that started a task, for example after a timeout, it starts and pays for a second one: there are no idempotency keys yet.
 - There are no payments: users get `INITIAL_CREDITS` the first time they log in, and more only when you add them with `scripts/add_credits.py`.
 
 ---
