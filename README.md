@@ -149,7 +149,11 @@ Without `DOMAIN`, Caddy serves `https://localhost`, with a certificate of its ow
    Wrong parameters get a 422 error, without spending a credit. `GET /api/task/divide/10/4` still works for older clients, and so does the `api_key` query parameter, but avoid the latter: URLs end up in server and proxy logs. The interactive docs at `/docs` list every route.
 
    The page shows the whole key only when you generate it: the database keeps just its first characters and a hash of it.
-5. Each user starts with a predefined number of credits (25 by default, set in `web/db_models.py`). A credit is reserved when a task is queued and given back if the task fails, so only successful tasks are charged. When credits run out, the user can't start more tasks until you add credits in the database, for example with `UPDATE account SET credits = credits + 25 WHERE email = 'user@example.com';`. With Docker, `docker compose exec postgres psql -U nanosaas` opens a database shell.
+5. Each user starts with a predefined number of credits (25 by default, set in `web/db_models.py`). A credit is reserved when a task is queued and given back if the task fails, so only successful tasks are charged. When credits run out, the user can't start more tasks until you add more, giving the email the user logs in with:
+    ```bash
+    docker compose exec api python scripts/add_credits.py user@example.com 25
+    ```
+   Without Docker, run `python scripts/add_credits.py user@example.com 25` from the repository root. To look into the database itself, `docker compose exec postgres psql -U nanosaas` opens a shell in it.
 
    A task that waits in the queue longer than `queue_timeout` seconds is dropped, failing as `TaskExpired`, and one that runs longer than `time_limit` seconds is stopped, failing as `TimeoutError` (10 minutes each by default, set in `config.toml`): either way its credit comes back. A task that never ends, for example because its worker died, fails the same way, as `TaskLost`, once both limits and one more minute have passed.
 

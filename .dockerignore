@@ -3,4 +3,5 @@
 !requirements.txt
 !*.py
 !web
+!scripts
 **/__pycache__

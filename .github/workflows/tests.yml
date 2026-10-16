@@ -109,6 +109,12 @@ jobs:
           echo "Credits: $credits"
           [ "$credits" = 24 ]
 
+          # Like the README says to add credits.
+          docker compose exec -T api python scripts/add_credits.py ci@example.com 5
+          credits=$(request /api/user_credits | jq .credits)
+          echo "Credits after adding 5: $credits"
+          [ "$credits" = 29 ]
+
       # Caddy, with a certificate of its own for localhost, DOMAIN's default.
       - name: Serve it over HTTPS
         env:
