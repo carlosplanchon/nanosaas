@@ -38,21 +38,27 @@
                 <span x-text="credits" class="text-blue-500 font-bold"></span>
             </div>
 
-            <!-- Info Box -->
-            <div class="bg-blue-100 border border-blue-300 text-blue-700 p-4 rounded-md mb-6">
-                <p>This tool performs a division operation using the <code>divide(x, y)</code> function. Provide two numbers, and the system will calculate the result of dividing <code>x</code> by <code>y</code>.</p>
+            <!-- Info Box: the chosen task's description -->
+            <div x-show="chosenTask()?.description" class="bg-blue-100 border border-blue-300 text-blue-700 p-4 rounded-md mb-6">
+                <p x-text="chosenTask()?.description"></p>
             </div>
 
-            <!-- Task Input -->
+            <!-- Task Input: the chosen task, and an input for each of its parameters -->
             <div class="flex flex-col md:flex-row items-center justify-center gap-4 mb-6">
                 <label class="block text-gray-700">
-                    Number 1:
-                    <input type="number" x-model.number="newTask.x" class="mt-1 p-2 border rounded-md w-full md:w-48">
+                    Task:
+                    <select x-model="chosen" x-on:change="resetValues()" class="mt-1 p-2 border rounded-md bg-white w-full md:w-48">
+                        <template x-for="taskType in taskTypes" :key="taskType.name">
+                            <option :value="taskType.name" :selected="taskType.name === chosen" x-text="taskType.name"></option>
+                        </template>
+                    </select>
                 </label>
-                <label class="block text-gray-700">
-                    Number 2:
-                    <input type="number" x-model.number="newTask.y" class="mt-1 p-2 border rounded-md w-full md:w-48">
-                </label>
+                <template x-for="parameter in chosenTask()?.parameters ?? []" :key="parameter.name">
+                    <label class="block text-gray-700">
+                        <span x-text="parameter.name"></span>:
+                        <input :type="isNumber(parameter) ? 'number' : 'text'" x-model="values[parameter.name]" class="mt-1 p-2 border rounded-md w-full md:w-48">
+                    </label>
+                </template>
                 <button x-on:click="startTask" class="bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded-md">
                     Start Task
                 </button>
@@ -112,15 +118,23 @@
             return Object.entries(parameters ?? {}).map(([name, value]) => `${name}: ${JSON.stringify(value)}`).join(', ');
         }
 
+        // The JSON schema types that get a number input.
+        function isNumber(parameter) {
+            return ['integer', 'number'].includes(parameter.type);
+        }
+
         function taskManager() {
             let timer = null;
 
             return {
-                newTask: { x: 0, y: 0 },
+                taskTypes: [], // The tasks the user can start, from /user/tasks
+                chosen: '',
+                values: {},
                 tasks: [],
                 credits: 0, // Initialize credits
 
                 init() {
+                    this.fetchTaskTypes();
                     this.refresh();
 
                     // Don't poll while the tab is hidden, and catch up when it shows again.
@@ -180,19 +194,59 @@
                     }
                 },
 
-                async startTask() {
+                chosenTask() {
+                    return this.taskTypes.find(taskType => taskType.name === this.chosen);
+                },
+
+                // Each parameter starts with its default, if it has one.
+                resetValues() {
+                    const parameters = this.chosenTask()?.parameters ?? [];
+                    this.values = Object.fromEntries(parameters.map(parameter => [parameter.name, parameter.default ?? '']));
+                },
+
+                async fetchTaskTypes() {
                     try {
-                        const { x, y } = this.newTask;
-                        const response = await fetch(`{{ root_prefix }}/task/divide/${x}/${y}`, {
-                            method: 'POST'
+                        const response = await fetch('{{ root_prefix }}/user/tasks');
+                        if (sessionExpired(response)) return;
+                        if (response.ok) {
+                            this.taskTypes = await response.json();
+                            this.chosen = this.taskTypes[0]?.name ?? '';
+                            this.resetValues();
+                        } else {
+                            console.error('Failed to fetch the tasks');
+                        }
+                    } catch (error) {
+                        console.error('Error fetching the tasks:', error);
+                    }
+                },
+
+                async startTask() {
+                    const taskType = this.chosenTask();
+                    if (!taskType) return;
+
+                    // Numbers go as numbers, and empty inputs are left out, so the task's defaults apply.
+                    const parameters = {};
+                    for (const parameter of taskType.parameters) {
+                        const value = this.values[parameter.name];
+                        if (value === '' || value === null || value === undefined) continue;
+                        parameters[parameter.name] = isNumber(parameter) ? Number(value) : value;
+                    }
+
+                    try {
+                        const response = await fetch(`{{ root_prefix }}/task/${encodeURIComponent(taskType.name)}`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(parameters)
                         });
                         if (sessionExpired(response)) return;
 
                         if (response.ok) {
-                            const data = await response.json();
                             this.refresh(); // Refresh task history and credits after starting a new task
                         } else if (response.status === 403) {
                             alert('Not enough credits');
+                        } else if (response.status === 422) {
+                            const data = await response.json();
+                            alert('Check the parameters: ' + data.detail.map(error => `${error.loc.at(-1)}: ${error.msg}`).join(', '));
                         } else {
                             alert('Failed to start task');
                         }

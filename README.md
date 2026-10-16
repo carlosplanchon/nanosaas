@@ -134,19 +134,19 @@ Without `DOMAIN`, Caddy serves `https://localhost`, with a certificate of its ow
 
    ![Login Page](docs/login.png)
 
-3. Create and manage tasks via the user dashboard.
+3. Create and manage tasks via the user dashboard: choose a task, fill in its parameters and start it.
 
    ![User Panel](docs/user_panel.png)
 
    It shows the latest 50 tasks (`TASK_HISTORY_LIMIT` in `main_api.py`). It checks them every 5 seconds while one is pending, every 30 seconds otherwise, and not while its tab is hidden.
 
-4. Use the API with the key from the *API Key Management* page, sent in the `X-API-Key` header:
+4. Use the API with the key from the *API Key Management* page, sent in the `X-API-Key` header. A task starts with a POST to `/api/task/<name>`, with its parameters in a JSON object:
     ```bash
     curl -H "X-API-Key: your_api_key" http://127.0.0.1:8000/api/user_credits
-    curl -H "X-API-Key: your_api_key" http://127.0.0.1:8000/api/task/divide/10/4
+    curl -H "X-API-Key: your_api_key" -H "Content-Type: application/json" -d '{"x": 10, "y": 4}' http://127.0.0.1:8000/api/task/divide
     curl -H "X-API-Key: your_api_key" http://127.0.0.1:8000/api/task_details/your_task_id
     ```
-   The `api_key` query parameter still works for older clients, but avoid it: URLs end up in server and proxy logs. The interactive docs at `/docs` list every route.
+   Wrong parameters get a 422 error, without spending a credit. `GET /api/task/divide/10/4` still works for older clients, and so does the `api_key` query parameter, but avoid the latter: URLs end up in server and proxy logs. The interactive docs at `/docs` list every route.
 
    The page shows the whole key only when you generate it: the database keeps just its first characters and a hash of it.
 5. Each user starts with a predefined number of credits (25 by default, set in `web/db_models.py`). A credit is reserved when a task is queued and given back if the task fails, so only successful tasks are charged. When credits run out, the user can't start more tasks until you add credits in the database, for example with `UPDATE account SET credits = credits + 25 WHERE email = 'user@example.com';`. With Docker, `docker compose exec postgres psql -U nanosaas` opens a database shell.
@@ -158,6 +158,7 @@ Without `DOMAIN`, Caddy serves `https://localhost`, with a certificate of its ow
     ```python
     @broker.task(task_name="divide")
     async def divide(x: int, y: int, user_id: str):
+        """Divide x by y. It waits 5 seconds first, like a long-running task."""
         try:
             await asyncio.sleep(5)  # Simulate a long-running operation
             result: float = x / y
@@ -173,21 +174,14 @@ Without `DOMAIN`, Caddy serves `https://localhost`, with a certificate of its ow
 
         return result
     ```
-   To add a task, for example one that squares a number:
-   1. Write it in `taskiq_task.py`, as an async function with `@broker.task(task_name=...)`. It gets the parameters you give it, plus `user_id`, the user's Google ID. The name is saved as the task's type in the history, so keep it under 50 characters and don't change it once the task has run:
-       ```python
-       @broker.task(task_name="square")
-       async def square(n: int, user_id: str):
-           return n * n
-       ```
-   2. In `main_api.py`, import it (`from taskiq_task import square as taskiq_task_square`) and add its routes, like the ones of `divide`: a POST one for the panel, and a GET one under `/api/` for API keys. They call `start_task()`, which reserves the credit, saves the task in the history with its parameters, and queues it:
-       ```python
-       @app.post("/task/square/{n}", response_model=TaskInitOut)
-       async def square(n: int, user: OpenID = Depends(get_logged_user)):
-           account = await Account.get(google_id=user.id)
-           return await start_task(account, taskiq_task_square, n=n)
-       ```
-   3. Add its inputs to `web/templates/user_panel.html`, whose form only starts `divide`. The history, the task details page and the API already show any task, with its type and parameters.
+   To add a task, write it in `taskiq_task.py`, as an async function with `@broker.task(task_name=...)`. For example, one that squares a number:
+    ```python
+    @broker.task(task_name="square")
+    async def square(n: int, user_id: str):
+        """Square n."""
+        return n * n
+    ```
+   That's all: the panel lists every task in `taskiq_task.py`, with its docstring and an input for each parameter, and the API starts it at `/api/task/square`. The parameters are checked against their type hints before the task is queued. Besides them, every task gets `user_id`, the user's Google ID, which users can't set. The name is saved as the task's type in the history, so keep it under 50 characters and don't change it once the task has run. Users can start any task in `taskiq_task.py`, so don't put tasks there that they shouldn't run.
 
    The tasks can use the database through the models in `web/db_models.py`: the worker connects to it when it starts. When a task ends, the worker saves its status and result in the task history. If the task raises an exception, it ends as FAILURE and its credit is given back automatically; if it catches the error and returns a result instead, as `divide` does, call `Account.refund_credit(user_id)` yourself. If your tasks take longer than 10 minutes, raise `time_limit`.
 

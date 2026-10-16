@@ -45,7 +45,7 @@ async def test_start_task_queues_any_task(app_module, db, account, user, taskiq_
     await Tortoise.init(config=app_module.TORTOISE_ORM)
     try:
         row = await app_module.Account.get(google_id=account.google_id)
-        started = await app_module.start_task(row, worker_app.square, n=3)
+        started = await app_module.start_task(row, worker_app.square, {"n": 3})
     finally:
         await Tortoise.close_connections()
 
@@ -53,6 +53,47 @@ async def test_start_task_queues_any_task(app_module, db, account, user, taskiq_
     assert await account.credits() == 4
     history = (await user.get("/user/task_history")).json()
     assert (history[0]["task_type"], history[0]["parameters"]) == ("square", {"n": 3})
+
+
+async def test_the_panel_lists_the_tasks_with_their_parameters(user):
+    r = await user.get("/user/tasks")
+    assert r.json() == [{
+        "name": "divide",
+        "description": "Divide x by y. It waits 5 seconds first, like a long-running task.",
+        "parameters": [
+            {"name": "x", "type": "integer", "default": None},
+            {"name": "y", "type": "integer", "default": None},
+        ],
+    }]
+
+
+async def test_any_task_starts_with_its_parameters_in_json(account, user, anon):
+    r = await user.post("/task/divide", json={"x": 10, "y": 4})
+    assert r.status_code == 200
+    assert (await wait_until_done(user, r.json()["id"]))["result"] == 2.5
+
+    r = await anon.post("/api/task/divide", json={"x": "9", "y": 3}, headers={"X-API-Key": account.api_key})
+    assert r.status_code == 200
+    data = await wait_until_done(user, r.json()["id"])
+    assert (data["parameters"], data["result"]) == ({"x": 9, "y": 3}, 3.0)
+    assert await account.credits() == 3
+
+
+async def test_wrong_tasks_or_parameters_spend_no_credit(db, account, user, anon):
+    for parameters, field in [
+        ({"x": "ten", "y": 4}, "x"),
+        ({"x": 1}, "y"),
+        # user_id comes from the session: nobody can start tasks for another user.
+        ({"x": 1, "y": 2, "user_id": "someone-else"}, "user_id"),
+    ]:
+        r = await user.post("/task/divide", json=parameters)
+        assert (r.status_code, r.json()["detail"][0]["loc"]) == (422, ["body", field])
+
+    assert (await user.post("/task/no-such-task", json={})).status_code == 404
+    r = await anon.post("/api/task/divide", json={"x": 1, "y": 2}, headers={"X-API-Key": "wrong"})
+    assert r.status_code == 401
+    assert await account.credits() == 5
+    assert await db.fetchval("SELECT count(*) FROM taskhistory WHERE user_id = $1", account.id) == 0
 
 
 async def test_the_task_history_shows_the_latest_tasks_up_to_date(
@@ -87,6 +128,7 @@ async def test_unknown_task_gives_404(user, route):
 async def test_creating_a_task_with_the_cookie_needs_post(account, user):
     # A GET that spends credits could be triggered by a link from another site.
     assert (await user.get("/task/divide/1/1")).status_code == 405
+    assert (await user.get("/task/divide")).status_code == 405
     assert await account.credits() == 5
 
 

@@ -86,12 +86,12 @@ jobs:
             INSERT INTO account (google_id, email, picture, provider, created_at, credits, api_key)
             VALUES ('ci', 'ci@example.com', '', 'google', now(), 25, '$stored')"
 
-          get() { curl --silent --fail --header "X-API-Key: $key" "$api$1"; }
+          request() { curl --silent --fail --header "X-API-Key: $key" "$api$1" "${@:2}"; }
           divide() {
             local task details
-            task=$(get "/api/task/divide/$1/$2" | jq -r .id)
+            task=$(request /api/task/divide --header "Content-Type: application/json" --data "{\"x\": $1, \"y\": $2}" | jq -r .id)
             for _ in $(seq 30); do
-              details=$(get "/api/task_details/$task")
+              details=$(request "/api/task_details/$task")
               [ "$(jq -r .status <<< "$details")" = SUCCESS ] && break
               sleep 1
             done
@@ -105,7 +105,7 @@ jobs:
           result=$(divide 1 0)
           echo "1 / 0: $result"
           [ "$(jq -r .status <<< "$result")" = error ]
-          credits=$(get /api/user_credits | jq .credits)
+          credits=$(request /api/user_credits | jq .credits)
           echo "Credits: $credits"
           [ "$credits" = 24 ]
 

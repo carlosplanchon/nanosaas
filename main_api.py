@@ -3,15 +3,22 @@
 # to calculate expiration of the JWT
 import datetime
 
+import functools
+
+import inspect
+
 import secrets
 
 import time
+
+import typing
 
 import uuid
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Depends, HTTPException, Security, Request
+from fastapi import Body, FastAPI, Depends, HTTPException, Security, Request
+from fastapi.exceptions import RequestValidationError
 
 from fastapi.responses import RedirectResponse
 from fastapi.responses import HTMLResponse
@@ -38,7 +45,7 @@ from tortoise.migrations.recorder import MigrationRecorder
 
 from fastapi.staticfiles import StaticFiles
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 
 from taskiq import AsyncTaskiqDecoratedTask
 from taskiq_redis.exceptions import ResultIsMissingError
@@ -421,7 +428,49 @@ class TaskLost(Exception):
     """A task that didn't end by its deadline: its worker died, or the broker lost it."""
 
 
-async def start_task(account: Account, task: AsyncTaskiqDecoratedTask, **parameters) -> TaskInitOut:
+@functools.cache
+def parameters_model(task_name: str) -> type[BaseModel]:
+    """
+    A model of the task's parameters, from its function's signature and
+    type hints: every parameter except user_id, which start_task() adds.
+    """
+    function = broker.find_task(task_name).original_func
+    hints = typing.get_type_hints(function)
+    fields = {
+        name: (
+            hints.get(name, typing.Any),
+            ... if parameter.default is inspect.Parameter.empty else parameter.default
+        )
+        for name, parameter in inspect.signature(function).parameters.items()
+        if name != "user_id"
+    }
+    return create_model(
+        f"{task_name}_parameters", __config__=ConfigDict(extra="forbid"), **fields
+    )
+
+
+def checked_task(task_type: str, parameters: dict) -> tuple[AsyncTaskiqDecoratedTask, dict]:
+    """
+    The task called task_type and its parameters, checked before it
+    spends a credit: 404 if there's no such task, 422 if they're wrong.
+    """
+    task = broker.find_task(task_type)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Unknown task")
+
+    try:
+        checked = parameters_model(task_type).model_validate(parameters)
+    except ValidationError as error:
+        # Like FastAPI's own errors, which point to the body.
+        raise RequestValidationError([
+            {**detail, "loc": ("body", *detail["loc"])}
+            for detail in error.errors(include_url=False, include_context=False)
+        ])
+
+    return task, checked.model_dump(mode="json")
+
+
+async def start_task(account: Account, task: AsyncTaskiqDecoratedTask, parameters: dict) -> TaskInitOut:
     """
     Reserve a credit, save the task in history and queue it in TaskIQ,
     with its parameters and the user's ID. Shared by every route that
@@ -451,7 +500,7 @@ async def start_task(account: Account, task: AsyncTaskiqDecoratedTask, **paramet
         await task.kicker().with_task_id(task_id).with_labels(
             timeout=TIME_LIMIT,
             queue_deadline=time.time() + QUEUE_TIMEOUT
-        ).kiq(user_id=account.google_id, **parameters)
+        ).kiq(**parameters, user_id=account.google_id)
     except Exception as e:
         # The task never reached the queue: drop its row and give the
         # credit back.
@@ -509,8 +558,49 @@ async def refresh_overdue_tasks(google_id: str) -> None:
     await refresh_tasks(overdue)
 
 
+@app.get("/user/tasks")
+async def list_tasks(user: OpenID = Depends(get_logged_user)):
+    """The tasks the user can start, with their description and parameters."""
+    tasks = []
+    for name, task in sorted(broker.get_all_tasks().items()):
+        properties = parameters_model(name).model_json_schema().get("properties", {})
+        tasks.append({
+            "name": name,
+            "description": inspect.getdoc(task.original_func) or "",
+            "parameters": [
+                {"name": parameter, "type": schema.get("type", "string"), "default": schema.get("default")}
+                for parameter, schema in properties.items()
+            ],
+        })
+    return tasks
+
+
 # POST because it spends a credit: the SameSite=lax cookie still goes
 # with GET navigations from other sites, so a link could trigger it.
+@app.post("/task/{task_type}", response_model=TaskInitOut)
+async def start_any_task(
+    task_type: str,
+    parameters: dict = Body(default={}),
+    user: OpenID = Depends(get_logged_user)
+        ):
+    """Start any task, with its parameters in a JSON object."""
+    task, parameters = checked_task(task_type, parameters)
+    account = await Account.get(google_id=user.id)
+    return await start_task(account, task, parameters)
+
+
+@app.post("/api/task/{task_type}", response_model=TaskInitOut)
+async def start_any_task_with_api_key(
+    task_type: str,
+    parameters: dict = Body(default={}),
+    account: Account = Depends(get_api_key_account)
+        ):
+    """Start any task using an API key, with its parameters in a JSON object."""
+    task, parameters = checked_task(task_type, parameters)
+    return await start_task(account, task, parameters)
+
+
+# divide's own routes, still here for the clients that use them.
 @app.post("/task/divide/{x}/{y}", response_model=TaskInitOut)
 async def divide(
     x: int,
@@ -518,7 +608,7 @@ async def divide(
     user: OpenID = Depends(get_logged_user)
         ):
     account = await Account.get(google_id=user.id)
-    return await start_task(account, taskiq_task_divide, x=x, y=y)
+    return await start_task(account, taskiq_task_divide, {"x": x, "y": y})
 
 
 @app.get("/api/task/divide/{x}/{y}", response_model=TaskInitOut)
@@ -537,7 +627,7 @@ async def divide_with_api_key(
     Returns:
         TaskInitOut: Details about the initiated task.
     """
-    return await start_task(account, taskiq_task_divide, x=x, y=y)
+    return await start_task(account, taskiq_task_divide, {"x": x, "y": y})
 
 
 @app.get("/task/status/{task_id}", response_model=TaskOut)

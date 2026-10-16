@@ -115,6 +115,7 @@ async def shutdown(state: TaskiqState):
 
 @broker.task(task_name="divide")
 async def divide(x: int, y: int, user_id: str):
+    """Divide x by y. It waits 5 seconds first, like a long-running task."""
     try:
         await asyncio.sleep(5)  # Simulate a long-running operation
         result: float = x / y
