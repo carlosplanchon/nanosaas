@@ -1,8 +1,8 @@
 # NanoSaaS
 
-NanoSaaS is a lightweight microservice platform for managing and tracking computational tasks. Designed with simplicity and scalability in mind, NanoSaaS is perfect for developers and small teams looking to automate background processes efficiently.
+NanoSaaS is a lightweight microservice platform for managing and tracking computational tasks. Write a task as an async Python function, and your users get a form to start it, an API route with its docs, and a history of its results, paying a credit only when it succeeds. Designed with simplicity and scalability in mind, NanoSaaS is perfect for developers and small teams looking to automate background processes efficiently.
 
-I built this system in just three days with almost no prior knowledge of web design or frontend development. While it works, the code quality might not adhere to the best practices, especially in terms of maintainability and structure. I encourage you to check the GitHub issues section, where I've documented the limitations and areas for improvement that I'm currently aware of.
+I built the first version in three days, with almost no prior knowledge of web design or frontend development. Since then I've kept working on it: credits can't be overspent by concurrent requests, a task runs once at most and gives its credit back if it fails or gets lost, API keys are stored hashed, and the database has migrations. Integration tests run it in CI with PostgreSQL, Redis and real workers. What it doesn't do yet is under [Known Limitations](#known-limitations).
 
 ---
 
@@ -222,6 +222,15 @@ pytest
 They take a few minutes: the example task waits 5 seconds, and some tests wait for tasks to time out.
 
 GitHub Actions runs them with Python 3.11 and 3.15 on every push to `main` and on every pull request (`.github/workflows/tests.yml`). It also starts the app with Docker Compose and runs two tasks through the API.
+
+---
+
+## Known Limitations
+
+- A task whose worker dies isn't run again: it fails as `TaskLost` after its deadline, giving its credit back, and the user has to start it again.
+- The panel only has number and text inputs, so tasks with list or object parameters can only be started through the API.
+- If a client retries a request that started a task, for example after a timeout, it starts and pays for a second one: there are no idempotency keys yet.
+- There are no payments: users get `INITIAL_CREDITS` the first time they log in, and more only when you add them with `scripts/add_credits.py`.
 
 ---
 
