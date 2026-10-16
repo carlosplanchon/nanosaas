@@ -131,7 +131,27 @@ class Receiver(BaseReceiver):
                 labels=message.labels,
                 error=TaskExpired(),
             )
-        return await super().run_task(target, message, ack_controller)
+
+        result = await super().run_task(target, message, ack_controller)
+        if isinstance(result.error, TaskError):
+            # Instead of the traceback that HideTaskErrors keeps out.
+            print(f"Task {message.task_id} failed with a TaskError: {result.error}")
+        return result
+
+
+class HideTaskErrors(logging.Filter):
+    """
+    Keeps out of the log TaskIQ's record of a task that raised a TaskError,
+    with its traceback: the task failed on purpose, with a message for the
+    user, and the Receiver logs it in a line.
+    """
+
+    def filter(self, record):
+        return not (record.exc_info and isinstance(record.exc_info[1], TaskError))
+
+
+# The logger of TaskIQ's receiver, which logs the tasks' exceptions.
+logging.getLogger("taskiq.receiver.receiver").addFilter(HideTaskErrors())
 
 
 @broker.on_event(TaskiqEvents.WORKER_STARTUP)

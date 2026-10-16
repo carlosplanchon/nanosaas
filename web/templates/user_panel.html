@@ -56,14 +56,22 @@
                 <template x-for="parameter in chosenTask()?.parameters ?? []" :key="parameter.name">
                     <label class="block text-gray-700">
                         <span x-text="parameter.name"></span>:
-                        <template x-if="parameter.type === 'boolean'">
+                        <template x-if="inputKind(parameter) === 'select'">
+                            <select x-model="values[parameter.name]" class="mt-1 p-2 border rounded-md bg-white w-full md:w-48">
+                                <option value=""></option>
+                                <template x-for="option in parameter.options" :key="JSON.stringify(option)">
+                                    <option :value="JSON.stringify(option)" :selected="JSON.stringify(option) === values[parameter.name]" x-text="option"></option>
+                                </template>
+                            </select>
+                        </template>
+                        <template x-if="inputKind(parameter) === 'checkbox'">
                             <input type="checkbox" x-model="values[parameter.name]">
                         </template>
-                        <template x-if="isJson(parameter)">
+                        <template x-if="inputKind(parameter) === 'json'">
                             <textarea x-model="values[parameter.name]" placeholder="JSON" class="mt-1 p-2 border rounded-md w-full md:w-48"></textarea>
                         </template>
-                        <template x-if="parameter.type !== 'boolean' && !isJson(parameter)">
-                            <input :type="isNumber(parameter) ? 'number' : 'text'" x-model="values[parameter.name]" class="mt-1 p-2 border rounded-md w-full md:w-48">
+                        <template x-if="['number', 'text'].includes(inputKind(parameter))">
+                            <input :type="inputKind(parameter)" x-model="values[parameter.name]" class="mt-1 p-2 border rounded-md w-full md:w-48">
                         </template>
                     </label>
                 </template>
@@ -126,14 +134,15 @@
             return Object.entries(parameters ?? {}).map(([name, value]) => `${name}: ${JSON.stringify(value)}`).join(', ');
         }
 
-        // The JSON schema types that get a number input.
-        function isNumber(parameter) {
-            return ['integer', 'number'].includes(parameter.type);
-        }
-
-        // And the ones typed as JSON: lists, and objects like dicts and models.
-        function isJson(parameter) {
-            return ['array', 'object'].includes(parameter.type);
+        // A parameter's input: a list to choose from, for an enum or a Literal,
+        // or else the one of its JSON schema type. Lists, and objects like dicts
+        // and models, are typed as JSON.
+        function inputKind(parameter) {
+            if (parameter.options) return 'select';
+            if (parameter.type === 'boolean') return 'checkbox';
+            if (['array', 'object'].includes(parameter.type)) return 'json';
+            if (['integer', 'number'].includes(parameter.type)) return 'number';
+            return 'text';
         }
 
         // Text that isn't JSON goes as it is, and the server says what's wrong with it.
@@ -146,11 +155,13 @@
         }
 
         // What a parameter's input starts with: its default, if it has one, as
-        // JSON for lists and objects. A checkbox without one starts unchecked.
+        // JSON for lists, objects and choices (an option's value is JSON, so a
+        // number stays a number). A checkbox without one starts unchecked.
         function initialValue(parameter) {
-            if (parameter.type === 'boolean') return parameter.default ?? false;
+            const kind = inputKind(parameter);
+            if (kind === 'checkbox') return parameter.default ?? false;
             if (parameter.default === null || parameter.default === undefined) return '';
-            return isJson(parameter) ? JSON.stringify(parameter.default) : parameter.default;
+            return ['json', 'select'].includes(kind) ? JSON.stringify(parameter.default) : parameter.default;
         }
 
         function taskManager() {
@@ -257,14 +268,15 @@
                     const taskType = this.chosenTask();
                     if (!taskType) return;
 
-                    // Numbers go as numbers, lists and objects as the JSON typed in, and
-                    // empty inputs are left out, so the task's defaults apply.
+                    // Numbers go as numbers, lists, objects and choices as their JSON,
+                    // and empty inputs are left out, so the task's defaults apply.
                     const parameters = {};
                     for (const parameter of taskType.parameters) {
                         let value = this.values[parameter.name];
                         if (value === '' || value === null || value === undefined) continue;
-                        if (isNumber(parameter)) value = Number(value);
-                        if (isJson(parameter)) value = parseJson(value);
+                        const kind = inputKind(parameter);
+                        if (kind === 'number') value = Number(value);
+                        if (['json', 'select'].includes(kind)) value = parseJson(value);
                         parameters[parameter.name] = value;
                     }
 

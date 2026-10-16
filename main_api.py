@@ -580,19 +580,30 @@ async def refresh_overdue_tasks(google_id: str) -> None:
     await refresh_tasks(overdue)
 
 
-def input_type(schema: dict, definitions: dict) -> str:
+def input_schema(schema: dict, definitions: dict) -> dict:
     """
-    The JSON type of a parameter, which picks its input in the panel: the
-    type of its schema, of the one it references (a model's is "object"),
-    or of the one besides null in an optional parameter's. "string" when
-    there isn't one, as in a union of several types.
+    The part of a parameter's schema that picks its input in the panel:
+    the schema it references (a model's or an enum's, in $defs), the one
+    besides null in an optional parameter's, or else the schema itself.
     """
     if "$ref" in schema:
-        return input_type(definitions[schema["$ref"].rsplit("/", 1)[-1]], definitions)
-    options = [option for option in schema.get("anyOf", []) if option.get("type") != "null"]
-    if len(options) == 1:
-        return input_type(options[0], definitions)
-    return schema.get("type", "string")
+        return input_schema(definitions[schema["$ref"].rsplit("/", 1)[-1]], definitions)
+    alternatives = [option for option in schema.get("anyOf", []) if option.get("type") != "null"]
+    if len(alternatives) == 1:
+        return input_schema(alternatives[0], definitions)
+    return schema
+
+
+def parameter_input(name: str, field: dict, definitions: dict) -> dict:
+    """
+    What the panel needs for a parameter's input: its JSON type ("string"
+    when there isn't one, as in a union of several types), the values to
+    choose from, of an enum or a Literal (a Literal of one has a "const"),
+    and its default.
+    """
+    schema = input_schema(field, definitions)
+    options = schema.get("enum") or ([schema["const"]] if "const" in schema else None)
+    return {"name": name, "type": schema.get("type", "string"), "options": options, "default": field.get("default")}
 
 
 @app.get("/user/tasks")
@@ -606,7 +617,7 @@ async def list_tasks(user: OpenID = Depends(get_logged_user)):
             "name": name,
             "description": inspect.getdoc(task.original_func) or "",
             "parameters": [
-                {"name": parameter, "type": input_type(field, definitions), "default": field.get("default")}
+                parameter_input(parameter, field, definitions)
                 for parameter, field in schema.get("properties", {}).items()
             ],
         })

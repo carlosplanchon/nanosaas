@@ -182,7 +182,7 @@ Any Google account can log in, and each new account gets `INITIAL_CREDITS` credi
         """Square n."""
         return n * n
     ```
-   That's all: the panel lists every task in `taskiq_task.py`, with its docstring and an input for each parameter (a checkbox for a `bool`, and JSON for lists, dicts and Pydantic models), and the API starts it at `/api/task/square`, which `/docs` shows too. The parameters are checked against their type hints before the task is queued. Besides them, every task gets `user_id`, the user's Google ID, which users can't set. The name is saved as the task's type in the history, so keep it under 50 characters and don't change it once the task has run. Users can start any task in `taskiq_task.py`, so don't put tasks there that they shouldn't run.
+   That's all: the panel lists every task in `taskiq_task.py`, with its docstring and an input for each parameter (a checkbox for a `bool`, a list to choose from for an `Enum` or a `Literal`, and JSON for lists, dicts and Pydantic models), and the API starts it at `/api/task/square`, which `/docs` shows too. The parameters are checked against their type hints before the task is queued. Besides them, every task gets `user_id`, the user's Google ID, which users can't set. The name is saved as the task's type in the history, so keep it under 50 characters and don't change it once the task has run. Users can start any task in `taskiq_task.py`, so don't put tasks there that they shouldn't run.
 
    The tasks can use the database through the models in `web/db_models.py`: the worker connects to it when it starts. When a task ends, the worker saves its status and result in the task history. If the task raises an exception, it ends as FAILURE and its credit is given back. Only the exception's type is saved, since its message may expose details of your servers: to tell the user why the task failed, raise `TaskError` with a message, as `divide` does, and the message is saved too. Don't catch an error to return it as the result instead: the task would end as SUCCESS, and be charged. If your tasks take longer than 10 minutes, raise `time_limit`.
 
@@ -195,7 +195,7 @@ Any Google account can log in, and each new account gets `INITIAL_CREDITS` credi
 
 ## Development Notes
 
-- To monitor tasks, read the worker's log: it shows each task it runs, and the errors. With Docker, `docker compose logs -f worker`. The `taskhistory` table keeps every task's status and result.
+- To monitor tasks, read the worker's log: it shows each task it runs, and the errors, with their traceback, except a `TaskError`, which takes a line. With Docker, `docker compose logs -f worker`. The `taskhistory` table keeps every task's status and result.
 - The database changes are migrations in `web/migrations/`, made with Tortoise ORM's own tool. The backend applies the new ones when it starts, and records them in the `tortoise_migrations` table. After changing the models in `web/db_models.py`, create a migration from the repository root, with the virtual environment activated (it reads `config.toml`, but doesn't connect to the database):
     ```bash
     tortoise -c shared.TORTOISE_ORM makemigrations

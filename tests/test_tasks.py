@@ -1,6 +1,8 @@
 """Tasks: credits, the API key routes and the task details."""
 import asyncio
+import logging
 import re
+import sys
 import time
 import tomllib
 
@@ -9,6 +11,7 @@ from taskiq import TaskiqResult
 from tortoise import Tortoise
 
 from tests.helpers import client_for, insert_task, wait_for_row, wait_until_done
+from web.db_models import TaskError
 
 pytestmark = [pytest.mark.anyio, pytest.mark.usefixtures("worker")]
 
@@ -30,6 +33,35 @@ async def test_failed_task_gives_the_credit_back(account, user, anon):
         "FAILURE", {"status": "error", "message": "Can't divide by zero.", "error": "TaskError"}
     )
     assert await account.credits() == 5
+
+
+async def test_a_task_error_takes_a_line_of_the_worker_log(services, start_server, start_worker, db, account):
+    # On its own Redis database, so this worker is the only one that gets the task.
+    server = start_server("task-error-log", broker=services.redis_url.rsplit("/", 1)[0] + "/3")
+    worker = start_worker(server)
+    async with client_for(server, account.cookie) as user:
+        r = await user.post("/task/divide", json={"x": 1, "y": 0})
+    task_id = r.json()["id"]
+    assert (await wait_for_row(db, task_id, "FAILURE"))[0] == "FAILURE"
+
+    log = worker.log.read_text()
+    assert f"Task {task_id} failed with a TaskError: Can't divide by zero." in log
+    assert "Traceback" not in log
+
+
+def test_other_errors_keep_their_traceback_in_the_worker_log(app_module):
+    import taskiq_task
+
+    def record_of(error):
+        """A record like the one TaskIQ logs when a task raises the error."""
+        try:
+            raise error
+        except Exception:
+            return logging.makeLogRecord({"msg": "Exception found while executing function.", "exc_info": sys.exc_info()})
+
+    keep = taskiq_task.HideTaskErrors().filter
+    assert not keep(record_of(TaskError("Can't divide by zero.")))
+    assert keep(record_of(RuntimeError("boom")))
 
 
 async def test_task_details_page_fetches_its_data(db, account, user):
@@ -64,8 +96,8 @@ async def test_the_panel_lists_the_tasks_with_their_parameters(user):
         "name": "divide",
         "description": "Divide x by y. It waits 5 seconds first, like a long-running task.",
         "parameters": [
-            {"name": "x", "type": "integer", "default": None},
-            {"name": "y", "type": "integer", "default": None},
+            {"name": "x", "type": "integer", "options": None, "default": None},
+            {"name": "y", "type": "integer", "options": None, "default": None},
         ],
     }]
 
@@ -74,18 +106,24 @@ async def test_the_panel_gets_the_input_type_of_each_parameter(app_module):
     from tests import worker_app  # noqa: F401 (its tasks join the API's broker)
 
     tasks = {task["name"]: task for task in await app_module.list_tasks(user=None)}
-    parameters = [(p["name"], p["type"], p["default"]) for p in tasks["every_kind"]["parameters"]]
+    parameters = [(p["name"], p["type"], p["options"], p["default"]) for p in tasks["every_kind"]["parameters"]]
     assert parameters == [
-        ("flag", "boolean", None),
-        ("numbers", "array", None),
-        ("options", "object", None),
+        ("flag", "boolean", None, None),
+        ("numbers", "array", None, None),
+        ("weights", "object", None, None),
         # A model's schema is in $defs.
-        ("point", "object", None),
+        ("point", "object", None, None),
         # A union of several types has no input of its own.
-        ("either", "string", None),
+        ("either", "string", None, None),
+        # An enum's schema too, with its values.
+        ("color", "string", ["red", "green"], None),
         # An optional parameter gets the input of its type.
-        ("limit", "integer", None),
-        ("ratio", "number", 0.5),
+        ("limit", "integer", None, None),
+        ("ratio", "number", None, 0.5),
+        ("size", "string", ["s", "m", "l"], "m"),
+        ("level", "integer", [1, 2, 3], 2),
+        # A Literal of one value has it as its "const".
+        ("order", "string", ["desc"], None),
     ]
 
 
