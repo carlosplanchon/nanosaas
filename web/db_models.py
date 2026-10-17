@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import datetime
 import hashlib
 import json
 
@@ -88,8 +89,13 @@ class TaskHistory(Model):
     status = fields.CharField(max_length=50, default="PENDING")
     result = fields.JSONField(null=True)  # Store task results or error details
     created_at = fields.DatetimeField(auto_now_add=True)
-    # When a worker took the task from the queue (see start()).
+    # When a worker took the task from the queue, for its current run (see start()).
     started_at = fields.DatetimeField(null=True)
+    # Until when the worker running it holds its lease, which it renews while
+    # it runs it (see renew()), and how many times a worker started it.
+    lease_until = fields.DatetimeField(null=True)
+    # Also a default of the column, which the existing rows get when it's added.
+    attempts = fields.IntField(default=0, db_default=0)
     # The Idempotency-Key of the request that started the task, if it had
     # one: the account's requests with the same key get this task.
     idempotency_key = fields.CharField(max_length=255, null=True)
@@ -101,20 +107,51 @@ class TaskHistory(Model):
         return f"{self.task_type} - {self.task_id}"
 
     @classmethod
-    async def start(cls, task_id: str) -> bool:
+    async def start(cls, task_id: str, lease: datetime.timedelta) -> datetime.datetime | None:
         """
-        Mark a pending task as started, only the first time.
+        Mark a pending task as started, by one copy of it, with a lease
+        that lasts lease.
 
         The worker calls this before it runs a task. Redis can queue a
         task twice, when it runs the LPUSH but the reply is lost and
         redis-py sends it again, or queue a task the API gave up for the
-        same reason (see give_up()). Only the first copy of a pending
-        task starts, so it runs once.
-        Returns False if the task has no pending row or already started.
+        same reason (see give_up()). Only one copy of a pending task
+        starts: the first one, or after release(), the first one queued
+        again.
+        Returns when it started, which tells this run from the next ones
+        (see renew()), or None if the task has no pending row or already
+        started.
         """
+        started_at = timezone.now()
         updated = await cls.filter(
             task_id=task_id, status="PENDING", started_at__isnull=True
-        ).update(started_at=timezone.now())
+        ).update(started_at=started_at, lease_until=started_at + lease, attempts=F("attempts") + 1)
+        return started_at if updated else None
+
+    @classmethod
+    async def renew(cls, task_id: str, started_at: datetime.datetime, lease: datetime.timedelta) -> bool:
+        """
+        Renew for lease the lease of the run of a task that started at
+        started_at. The worker calls this every few seconds while it runs
+        the task.
+        Returns False if that run ended, or was released.
+        """
+        updated = await cls.filter(
+            task_id=task_id, status="PENDING", started_at=started_at
+        ).update(lease_until=timezone.now() + lease)
+        return updated == 1
+
+    @classmethod
+    async def release(cls, task_id: str, started_at: datetime.datetime) -> bool:
+        """
+        Release a task from its run that started at started_at, if its
+        lease expired, so that it starts again when it's queued again.
+        Returns False if that run ended, renewed its lease meanwhile, or
+        another worker released it.
+        """
+        updated = await cls.filter(
+            task_id=task_id, status="PENDING", started_at=started_at, lease_until__lt=timezone.now()
+        ).update(started_at=None)
         return updated == 1
 
     @classmethod

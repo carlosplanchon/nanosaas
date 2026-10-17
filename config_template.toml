@@ -25,3 +25,6 @@ backend="redis://redis:6379/0"
 # Optional, in seconds: how long a task can wait in the queue, and how long it can run.
 queue_timeout = 600
 time_limit = 600
+# Optional: a task whose worker stops renewing its lease for `lease` seconds runs again, up to `attempts` runs in all.
+lease = 30
+attempts = 3

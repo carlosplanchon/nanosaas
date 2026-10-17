@@ -1,51 +1,110 @@
 """
-Tasks that don't end on their own: their worker died, or they waited or ran
-too long. They fail, giving their credit back, once TaskIQ can't run them.
+Tasks that don't end on their own: their worker died, so they run again, or
+they waited or ran too long. They fail, giving their credit back, once
+TaskIQ can't run them.
 """
 import asyncio
 import datetime
 import time
+import tomllib
 
 import pytest
 from taskiq import TaskiqResult
+from taskiq.serializers import JSONSerializer
+from taskiq_redis import RedisAsyncResultBackend
 
-from tests.helpers import age_task, client_for, insert_task, task_row, wait_for_log, wait_until_done
+from tests.helpers import (
+    age_task, client_for, create_account, insert_task, task_row, wait_for_log, wait_for_row, wait_until_done
+)
 
 pytestmark = pytest.mark.anyio
 
 ERROR = {"status": "error", "message": "The task failed"}
-# With the default queue_timeout and time_limit, 600 s each, plus a minute.
-DEADLINE = datetime.timedelta(seconds=600 + 600 + 60)
+# With the default queue_timeout, time_limit, lease and attempts: 3 runs of
+# 600 + 600 + 2 * 30 seconds, plus a minute.
+DEADLINE = datetime.timedelta(seconds=3 * (600 + 600 + 2 * 30) + 60)
 
 
-async def test_a_task_whose_worker_dies_fails_after_its_deadline(
-    short_limits_server, start_worker, db, account
+@pytest.fixture
+async def retry_account(retry_db):
+    """An account in the database of retry_server."""
+    return await create_account(retry_db)
+
+
+async def attempts(db, task_id):
+    return await db.fetchval("SELECT attempts FROM taskhistory WHERE task_id = $1", task_id)
+
+
+async def start_divide(server, account):
+    async with client_for(server, account.cookie) as user:
+        return (await user.post("/task/divide/6/3")).json()["id"]
+
+
+async def kill_while_running(worker, task_id):
+    await wait_for_log(worker.log, f"Executing task divide with ID: {task_id}")
+    await asyncio.sleep(1)
+    worker.kill()  # In the middle of the task's 5 seconds.
+
+
+async def test_a_task_whose_worker_dies_runs_again_in_another_one(
+    retry_server, start_worker, retry_db, retry_account
 ):
-    worker = start_worker(short_limits_server)
-    async with client_for(short_limits_server, account.cookie) as user:
-        r = await user.post("/task/divide/6/3")
-        task_id = r.json()["id"]
-        await wait_for_log(worker.log, f"Executing task divide with ID: {task_id}")
-        await asyncio.sleep(1)
-        worker.kill()  # In the middle of the task's 5 seconds.
+    worker = start_worker(retry_server)
+    task_id = await start_divide(retry_server, retry_account)
+    await kill_while_running(worker, task_id)
 
-        # No other worker runs it again, and TaskIQ never hears back from it:
-        # it stays PENDING, holding its credit.
-        start_worker(short_limits_server)
-        await asyncio.sleep(5)
-        assert (await user.get(f"/task/status/{task_id}")).json()["status"] == "PENDING"
-        assert await account.credits() == 4
+    # Its lease expires 2 seconds after its last renewal, and the other worker queues it again.
+    other = start_worker(retry_server)
+    assert await wait_for_row(retry_db, task_id, "SUCCESS") == ("SUCCESS", 2.0)
+    assert f"Task {task_id} lost its worker: queued again, after 1 of 2 runs." in other.log.read_text()
+    assert await attempts(retry_db, task_id) == 2
+    assert await retry_account.credits() == 4
 
-        # Past its deadline it fails, and its credit comes back only once.
-        await age_task(db, task_id, datetime.timedelta(hours=1))
-        rs = await asyncio.gather(
-            user.get("/user/task_history"),
-            user.get("/user/credits"),
-            *(user.get(f"/api/task_details_from_user/{task_id}") for _ in range(5)),
-        )
-    assert all(r.status_code == 200 for r in rs)
-    assert await task_row(db, task_id) == ("FAILURE", {**ERROR, "error": "TaskLost"})
-    assert await account.credits() == 5
+
+async def test_a_task_whose_workers_keep_dying_fails_after_its_attempts(
+    retry_server, start_worker, retry_db, retry_account
+):
+    workers = [start_worker(retry_server)]
+    task_id = await start_divide(retry_server, retry_account)
+    for _ in range(2):
+        await kill_while_running(workers[-1], task_id)
+        workers.append(start_worker(retry_server))
+
+    assert await wait_for_row(retry_db, task_id, "FAILURE") == ("FAILURE", {**ERROR, "error": "TaskLost"})
+    assert f"Task {task_id} lost its worker in each of its 2 runs: failed." in workers[-1].log.read_text()
+    assert await retry_account.credits() == 5
+
+
+async def test_a_task_that_runs_longer_than_its_lease_runs_once(
+    retry_server, start_worker, retry_db, retry_account
+):
+    # Its worker renews its lease while it runs its 5 seconds, so neither worker queues it again.
+    workers = [start_worker(retry_server), start_worker(retry_server)]
+    task_id = await start_divide(retry_server, retry_account)
+    assert await wait_for_row(retry_db, task_id, "SUCCESS") == ("SUCCESS", 2.0)
+    assert await attempts(retry_db, task_id) == 1
+    log = "".join(worker.log.read_text() for worker in workers)
+    assert log.count(f"Executing task divide with ID: {task_id}") == 1
+    assert "queued again" not in log
+
+
+async def test_a_task_that_ended_unsaved_is_saved_instead_of_run_again(
+    retry_server, start_worker, retry_db, retry_account
+):
+    # Its worker ended it, couldn't save it, and died: its lease expired, but TaskIQ has its result.
+    task_id = await insert_task(retry_db, retry_account)
+    await retry_db.execute(
+        "UPDATE taskhistory SET started_at = now(), lease_until = now(), attempts = 1 WHERE task_id = $1",
+        task_id,
+    )
+    backend = tomllib.loads(retry_server.config.read_text())["taskiq"]["backend"]
+    results = RedisAsyncResultBackend(backend, serializer=JSONSerializer(), prefix_str="nanosaas-result")
+    await results.set_result(task_id, TaskiqResult(is_err=False, return_value=2.0, execution_time=0))
+    await results.shutdown()
+
+    worker = start_worker(retry_server)
+    assert await wait_for_row(retry_db, task_id, "SUCCESS") == ("SUCCESS", 2.0)
+    assert "Executing task" not in worker.log.read_text()
 
 
 async def test_a_task_that_waits_too_long_in_the_queue_is_dropped(

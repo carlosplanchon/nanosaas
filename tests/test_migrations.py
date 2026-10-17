@@ -45,7 +45,10 @@ async def test_a_database_from_before_the_migrations_keeps_its_data(services, st
     db = await asyncpg.connect(f"postgresql://{host}/{name}")
     try:
         # Without the columns that the later migrations add.
-        await db.execute("ALTER TABLE taskhistory DROP COLUMN started_at, DROP COLUMN idempotency_key")
+        await db.execute(
+            "ALTER TABLE taskhistory DROP COLUMN started_at, DROP COLUMN idempotency_key, "
+            "DROP COLUMN lease_until, DROP COLUMN attempts"
+        )
         account = await create_account(db)
         task_id = await insert_task(db, account, status="SUCCESS", result=2.0)
 

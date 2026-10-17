@@ -9,8 +9,6 @@ import inspect
 
 import secrets
 
-import time
-
 import typing
 
 import uuid
@@ -52,7 +50,8 @@ from taskiq_redis.exceptions import ResultIsMissingError
 
 from taskiq_task import broker
 from taskiq_task import divide as taskiq_task_divide
-from taskiq_task import QUEUE_TIMEOUT, TIME_LIMIT
+from taskiq_task import ATTEMPTS, LEASE, QUEUE_TIMEOUT, TIME_LIMIT
+from taskiq_task import TaskLost, queue_task
 
 from web.db_models import Account, TaskHistory
 
@@ -425,12 +424,10 @@ async def serve_page(
 #      --- TASKS ---      #
 #                         #
 ###########################
-# Past this, a pending task was lost: TaskIQ can't start or run it anymore.
-TASK_DEADLINE = datetime.timedelta(seconds=QUEUE_TIMEOUT + TIME_LIMIT + 60)
-
-
-class TaskLost(Exception):
-    """A task that didn't end by its deadline: its worker died, or the broker lost it."""
+# Past this, a pending task was lost: TaskIQ can't start or run it anymore. In each
+# of its runs it can wait in the queue and run until it's stopped, and a run whose
+# worker died is queued again within twice its lease.
+TASK_DEADLINE = datetime.timedelta(seconds=ATTEMPTS * (QUEUE_TIMEOUT + TIME_LIMIT + 2 * LEASE) + 60)
 
 
 @functools.cache
@@ -518,11 +515,7 @@ async def start_task(
         )
 
     try:
-        # Queue the TaskIQ task
-        await task.kicker().with_task_id(task_id).with_labels(
-            timeout=TIME_LIMIT,
-            queue_deadline=time.time() + QUEUE_TIMEOUT
-        ).kiq(**parameters, user_id=account.google_id)
+        await queue_task(task.task_name, task_id, parameters, account.google_id)
     except Exception as e:
         # The error goes to the log: it may show where the servers are.
         print(f"Task initiation failed for {task_id}: {e.__cause__ or e}")

@@ -2,7 +2,7 @@
 
 NanoSaaS is a lightweight microservice platform for managing and tracking computational tasks. Write a task as an async Python function, and your users get a form to start it, an API route with its docs, and a history of its results, paying a credit only when it succeeds. Designed with simplicity and scalability in mind, NanoSaaS is perfect for developers and small teams looking to automate background processes efficiently.
 
-I built the first version in three days, with almost no prior knowledge of web design or frontend development. Since then I've kept working on it: credits can't be overspent by concurrent requests, a task runs once at most and gives its credit back if it fails or gets lost, API keys are stored hashed, and the database has migrations. Integration tests run it in CI with PostgreSQL, Redis and real workers. What it doesn't do yet is under [Known Limitations](#known-limitations).
+I built the first version in three days, with almost no prior knowledge of web design or frontend development. Since then I've kept working on it: credits can't be overspent by concurrent requests, a task runs in one worker at a time, runs again if that worker dies, and gives its credit back if it fails, API keys are stored hashed, and the database has migrations. Integration tests run it in CI with PostgreSQL, Redis and real workers. What it doesn't do yet is under [Known Limitations](#known-limitations).
 
 ---
 
@@ -106,7 +106,7 @@ Requires Python 3.11 or newer, PostgreSQL and Redis 6 or newer.
     ```bash
     taskiq worker taskiq_task:broker --receiver taskiq_task:Receiver
     ```
-    `--receiver` makes it run each task once at most, and drop the tasks that waited in the queue longer than `queue_timeout`.
+    `--receiver` makes it run one copy of each task at a time, renewing its lease while it runs, and drop the tasks that waited in the queue longer than `queue_timeout`.
 
 Run both commands from the repository root: `config.toml`, the templates and the static files are loaded from the current directory.
 
@@ -159,11 +159,13 @@ Any Google account can log in, and each new account gets `INITIAL_CREDITS` credi
     ```
    Without Docker, run `python scripts/add_credits.py user@example.com 25` from the repository root. To look into the database itself, `docker compose exec postgres psql -U nanosaas` opens a shell in it.
 
-   A task that waits in the queue longer than `queue_timeout` seconds is dropped, failing as `TaskExpired`, and one that runs longer than `time_limit` seconds is stopped, failing as `TimeoutError` (10 minutes each by default, set in `config.toml`): either way its credit comes back. A task that never ends, for example because its worker died, fails the same way, as `TaskLost`, once both limits and one more minute have passed.
+   A task that waits in the queue longer than `queue_timeout` seconds is dropped, failing as `TaskExpired`, and one that runs longer than `time_limit` seconds is stopped, failing as `TimeoutError` (10 minutes each by default, set in `config.toml`): either way its credit comes back.
 
-   A task runs once at most. When Redis queues a task but its reply to the backend is lost, redis-py sends the task again, and when there's no reply at all, the backend gives the task up and its credit back, though Redis may have queued it. So the worker marks each task as started in the task history before running it, and skips the copies of a task that already started, and the tasks given up.
+   A task whose worker dies runs again, in another worker. While a worker runs a task, it renews the task's lease every few seconds, and the workers queue again the tasks whose lease went `lease` seconds (30 by default) without renewal, up to `attempts` runs in all (3 by default): after the last one, the task fails as `TaskLost`, and its credit comes back. A task runs again from the start, so make the tasks that change things outside NanoSaaS safe to run twice. A task that never ends otherwise, for example because Redis lost it, also fails as `TaskLost`, once each of its runs could have waited in the queue and run until stopped (about an hour by default).
 
-   TaskIQ stops a task by cancelling it, which only works while the task awaits something. Blocking code, like `time.sleep()` or a long computation, can't be stopped, and holds up the worker's other tasks: use async libraries, or run it with `await asyncio.to_thread(...)`. In a thread, the task fails at `time_limit`, but the thread keeps running until it ends.
+   Only one worker runs a task at a time. When Redis queues a task but its reply to the backend is lost, redis-py sends the task again, and when there's no reply at all, the backend gives the task up and its credit back, though Redis may have queued it. So the worker marks each task as started in the task history before running it, and skips the copies of a task that already started, and the tasks given up.
+
+   TaskIQ stops a task by cancelling it, which only works while the task awaits something. Blocking code, like `time.sleep()` or a long computation, can't be stopped, holds up the worker's other tasks, and keeps the worker from renewing the task's lease, so after `lease` seconds the task also runs in another worker: use async libraries, or run it with `await asyncio.to_thread(...)`. In a thread, the task fails at `time_limit`, but the thread keeps running until it ends.
 6. Add your own tasks in `taskiq_task.py`. The included `divide` task simulates a long-running operation:
     ```python
     @broker.task(task_name="divide")
@@ -229,7 +231,7 @@ GitHub Actions runs them with Python 3.11 and 3.15 on every push to `main` and o
 
 ## Known Limitations
 
-- A task whose worker dies isn't run again: it fails as `TaskLost` after its deadline, giving its credit back, and the user has to start it again.
+- A task whose worker dies in the middle of it runs again from the start, so a task that changes things outside NanoSaaS, like sending an email, may do it twice.
 - There are no payments: users get `INITIAL_CREDITS` the first time they log in, and more only when you add them with `scripts/add_credits.py`.
 
 ---

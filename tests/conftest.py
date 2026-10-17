@@ -2,6 +2,7 @@
 Fixtures: PostgreSQL and Redis in Docker (with testcontainers), and the API
 and a TaskIQ worker running as separate processes, like in production.
 """
+import asyncio
 import os
 import signal
 import socket
@@ -251,6 +252,39 @@ def short_limits_server(tmp_path_factory, services, server):
     )
     yield short
     process.stop()
+
+
+@pytest.fixture(scope="session")
+def retry_server(tmp_path_factory, services, server):
+    """
+    The API with lease = 2 and attempts = 2: the tests can kill its workers,
+    and the others queue their tasks again soon. On its own Redis and
+    PostgreSQL databases, so the other APIs' workers don't see its tasks,
+    whose leases expire.
+    """
+    asyncio.run(create_database(services, "retry"))
+    broker = services.redis_url.rsplit("/", 1)[0] + "/4"
+    process, retry = run_server(
+        tmp_path_factory, services, "retry", broker=broker, db_name="retry", lease=2, attempts=2
+    )
+    yield retry
+    process.stop()
+
+
+async def create_database(services, name):
+    conn = await asyncpg.connect(services.dsn)
+    try:
+        await conn.execute(f'CREATE DATABASE "{name}"')
+    finally:
+        await conn.close()
+
+
+@pytest.fixture
+async def retry_db(services, retry_server):
+    """A connection to the database of retry_server."""
+    conn = await asyncpg.connect(services.dsn.rsplit("/", 1)[0] + "/retry")
+    yield conn
+    await conn.close()
 
 
 @pytest.fixture(scope="session")
