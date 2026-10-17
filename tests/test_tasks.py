@@ -90,6 +90,23 @@ async def test_start_task_queues_any_task(app_module, db, account, user, taskiq_
     assert (history[0]["task_type"], history[0]["parameters"]) == ("square", {"n": 3})
 
 
+async def test_a_task_that_asks_for_its_id_gets_it(app_module, db, account, taskiq_client):
+    from tests import worker_app
+
+    await Tortoise.init(config=app_module.TORTOISE_ORM)
+    try:
+        row = await app_module.Account.get(google_id=account.google_id)
+        started = await app_module.start_task(row, worker_app.ids, {})
+    finally:
+        await Tortoise.close_connections()
+
+    result = {"user_id": account.google_id, "task_id": started.id}
+    assert await wait_for_row(db, started.id, "SUCCESS") == ("SUCCESS", result)
+    # Like user_id, it isn't one of the parameters that users set.
+    tasks = {task["name"]: task for task in await app_module.list_tasks(user=None)}
+    assert tasks["ids"]["parameters"] == []
+
+
 async def test_the_panel_lists_the_tasks_with_their_parameters(user):
     r = await user.get("/user/tasks")
     assert r.json() == [{
@@ -162,6 +179,8 @@ async def test_wrong_tasks_or_parameters_spend_no_credit(db, account, user, anon
         ({"x": 1}, "y"),
         # user_id comes from the session: nobody can start tasks for another user.
         ({"x": 1, "y": 2, "user_id": "someone-else"}, "user_id"),
+        # And the worker gives a task its ID.
+        ({"x": 1, "y": 2, "task_id": "someone-elses"}, "task_id"),
     ]:
         r = await user.post("/task/divide", json=parameters)
         assert (r.status_code, r.json()["detail"][0]["loc"]) == (422, ["body", field])

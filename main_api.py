@@ -441,7 +441,8 @@ QUEUE_DEADLINE = datetime.timedelta(seconds=QUEUE_TIMEOUT + 60)
 def parameters_model(task_name: str) -> type[BaseModel]:
     """
     A model of the task's parameters, from its function's signature and
-    type hints: every parameter except user_id, which start_task() adds.
+    type hints: every parameter except user_id, which start_task() adds,
+    and task_id, which the worker adds.
     """
     function = broker.find_task(task_name).original_func
     hints = typing.get_type_hints(function)
@@ -451,7 +452,7 @@ def parameters_model(task_name: str) -> type[BaseModel]:
             ... if parameter.default is inspect.Parameter.empty else parameter.default
         )
         for name, parameter in inspect.signature(function).parameters.items()
-        if name != "user_id"
+        if name not in ("user_id", "task_id")
     }
     return create_model(
         f"{task_name}_parameters", __config__=ConfigDict(extra="forbid"), **fields

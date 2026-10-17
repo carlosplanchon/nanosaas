@@ -1,8 +1,8 @@
 """
 TaskIQ broker for the tests' worker: the app's tasks, plus one that always
 raises, to test what happens to a task that fails with an exception, one
-more to start through start_task(), and one with a parameter of each kind,
-for the panel's inputs.
+more to start through start_task(), one with a parameter of each kind, for
+the panel's inputs, and one that returns the IDs the worker gives it.
 """
 from enum import Enum
 from typing import Literal
@@ -20,6 +20,11 @@ async def explode():
 @broker.task(task_name="square")
 async def square(n: int, user_id: str):
     return n * n
+
+
+@broker.task(task_name="ids")
+async def ids(user_id: str, task_id: str):
+    return {"user_id": user_id, "task_id": task_id}
 
 
 class Point(BaseModel):

@@ -20,6 +20,7 @@ from shared import TORTOISE_ORM
 
 import asyncio
 import datetime
+import inspect
 import logging
 import time
 
@@ -216,6 +217,11 @@ class Receiver(BaseReceiver):
                 labels=message.labels,
                 error=TaskExpired(),
             )
+
+        # The task's ID, for a task that asks for it: the same in each of its runs,
+        # so it can pass it as the idempotency key of the services it calls.
+        if "task_id" in inspect.signature(target).parameters:
+            message.kwargs["task_id"] = message.task_id
 
         renewing = asyncio.create_task(renew_lease(message.task_id, started_at))
         try:

@@ -161,7 +161,7 @@ Any Google account can log in, and each new account gets `INITIAL_CREDITS` credi
 
    A task that waits in the queue longer than `queue_timeout` seconds is dropped, failing as `TaskExpired`, and one that runs longer than `time_limit` seconds is stopped, failing as `TimeoutError` (10 minutes each by default, set in `config.toml`): either way its credit comes back.
 
-   A task whose worker dies runs again, in another worker. While a worker runs a task, it renews the task's lease every few seconds, and the workers queue again the tasks whose lease went `lease` seconds (30 by default) without renewal, up to `attempts` runs in all (3 by default): after the last one, the task fails as `TaskLost`, and its credit comes back. A task runs again from the start, so make the tasks that change things outside NanoSaaS safe to run twice. A task that never ends otherwise, for example because Redis lost it, also fails as `TaskLost`: one that never started, once it could have waited in the queue (`queue_timeout` and one more minute), and one that did, once each of its runs could have waited in the queue and run until stopped (about an hour by default).
+   A task whose worker dies runs again, in another worker. While a worker runs a task, it renews the task's lease every few seconds, and the workers queue again the tasks whose lease went `lease` seconds (30 by default) without renewal, up to `attempts` runs in all (3 by default): after the last one, the task fails as `TaskLost`, and its credit comes back. A task runs again from the start, so make the tasks that change things outside NanoSaaS safe to run twice: for example, with their `task_id` as the idempotency key of the services they call (see below). A task that never ends otherwise, for example because Redis lost it, also fails as `TaskLost`: one that never started, once it could have waited in the queue (`queue_timeout` and one more minute), and one that did, once each of its runs could have waited in the queue and run until stopped (about an hour by default).
 
    Only one worker runs a task at a time. When Redis queues a task but its reply to the backend is lost, redis-py sends the task again, and when there's no reply at all, the backend gives the task up and its credit back, though Redis may have queued it. So the worker marks each task as started in the task history before running it, and skips the copies of a task that already started, and the tasks given up.
 
@@ -184,9 +184,22 @@ Any Google account can log in, and each new account gets `INITIAL_CREDITS` credi
         """Square n."""
         return n * n
     ```
-   That's all: the panel lists every task in `taskiq_task.py`, with its docstring and an input for each parameter (a checkbox for a `bool`, a list to choose from for an `Enum` or a `Literal`, and JSON for lists, dicts and Pydantic models), and the API starts it at `/api/task/square`, which `/docs` shows too. The parameters are checked against their type hints before the task is queued. Besides them, every task gets `user_id`, the user's Google ID, which users can't set. The name is saved as the task's type in the history, so keep it under 50 characters and don't change it once the task has run. Users can start any task in `taskiq_task.py`, so don't put tasks there that they shouldn't run.
+   That's all: the panel lists every task in `taskiq_task.py`, with its docstring and an input for each parameter (a checkbox for a `bool`, a list to choose from for an `Enum` or a `Literal`, and JSON for lists, dicts and Pydantic models), and the API starts it at `/api/task/square`, which `/docs` shows too. The parameters are checked against their type hints before the task is queued. Besides them, every task gets `user_id`, the user's Google ID, and a task with a `task_id` parameter gets its ID, which is the same in each of its runs: users can set neither. The name is saved as the task's type in the history, so keep it under 50 characters and don't change it once the task has run. Users can start any task in `taskiq_task.py`, so don't put tasks there that they shouldn't run.
 
    The tasks can use the database through the models in `web/db_models.py`: the worker connects to it when it starts. When a task ends, the worker saves its status and result in the task history. If the task raises an exception, it ends as FAILURE and its credit is given back. Only the exception's type is saved, since its message may expose details of your servers: to tell the user why the task failed, raise `TaskError` with a message, as `divide` does, and the message is saved too. Don't catch an error to return it as the result instead: the task would end as SUCCESS, and be charged. If your tasks take longer than 10 minutes, raise `time_limit`.
+
+   A task whose worker dies runs again from the start, so if it changes things outside NanoSaaS, pass its `task_id` to the services it calls as their idempotency key, where they take one: they do it once, however many times the task runs. For example, with [httpx](https://www.python-httpx.org/):
+    ```python
+    @broker.task(task_name="send_message")
+    async def send_message(to: str, text: str, user_id: str, task_id: str):
+        """Send a message."""
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                "https://api.example.com/messages",
+                json={"to": to, "text": text},
+                headers={"Idempotency-Key": task_id},
+            )
+    ```
 
    Return plain Python values (dicts, lists, numbers or strings): TaskIQ turns them into JSON. Don't return `json.dumps(...)`: the result would be saved as a string, and the API would show it with escaped quotes.
 7. Customize the pages in `web/templates/`. Put images, icons and other static files in `web/static/`: they are served at `/web/static/`. In the templates, start their URLs with `{{ root_prefix }}` so they also work with a `ROOT_PATH`, as the logo in `login.html` does.
@@ -235,7 +248,7 @@ GitHub Actions runs them with Python 3.11 and 3.15 on every push to `main` and o
 
 ## Known Limitations
 
-- A task whose worker dies in the middle of it runs again from the start, so a task that changes things outside NanoSaaS, like sending an email, may do it twice.
+- A task whose worker dies in the middle of it runs again from the start, so a task that changes things outside NanoSaaS, like sending an email, may do it twice, unless the service it calls takes its `task_id` as an idempotency key.
 - There are no payments: users get `INITIAL_CREDITS` the first time they log in, and more only when you add them with `scripts/add_credits.py`.
 
 ---
