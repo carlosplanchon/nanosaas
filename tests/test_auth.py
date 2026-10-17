@@ -59,14 +59,22 @@ def test_login_creates_the_account_once_and_sets_a_secure_cookie(app_module, ser
             )
             assert (r.status_code, r.headers["location"]) == (307, "/userpanel")
             assert SECURE_FLAGS <= cookie_attributes(r.headers["set-cookie"])
+            token = r.cookies["token"]
 
             # The client won't send a Secure cookie over http: set it by hand.
-            client.cookies.set("token", r.cookies["token"])
+            client.cookies.set("token", token)
             # INITIAL_CREDITS = 0 in the tests' config: no tasks until someone gives credits.
             assert client.get("/user/credits").json() == {"credits": 0}
             r = client.post("/task/divide", json={"x": 1, "y": 1})
             assert (r.status_code, r.json()) == (403, {"detail": "Not enough credits"})
             assert client.get("/userpanel").status_code == 200
+
+            # Logging out ends the session, so its cookie stops working, and the
+            # next login starts another one.
+            assert client.post("/auth/logout", follow_redirects=False).status_code == 303
+            client.cookies.clear()
+            client.cookies.set("token", token)
+            assert client.get("/user/credits").status_code == 401
             client.cookies.clear()
 
     assert asyncio.run(count_accounts(services.dsn, google_id)) == 1
@@ -74,7 +82,7 @@ def test_login_creates_the_account_once_and_sets_a_secure_cookie(app_module, ser
 
 def test_logout_deletes_the_cookie_with_the_same_flags(app_module):
     with TestClient(app_module.app, base_url="http://127.0.0.1") as client:
-        r = client.get("/auth/logout", follow_redirects=False)
+        r = client.post("/auth/logout", follow_redirects=False)
 
     assert r.headers["set-cookie"].startswith("token=")
     assert SECURE_FLAGS | {"max-age=0"} <= cookie_attributes(r.headers["set-cookie"])

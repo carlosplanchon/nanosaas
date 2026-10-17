@@ -132,7 +132,7 @@ Any Google account can log in, and each new account gets `INITIAL_CREDITS` credi
 ## Usage
 
 1. Access the application at `http://127.0.0.1:8000`.
-2. Log in using Google SSO.
+2. Log in using Google SSO. Logging out ends the user's sessions, on every device: their cookies stop working, even a copy of one.
 
    ![Login Page](docs/login.png)
 

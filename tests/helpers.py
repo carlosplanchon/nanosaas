@@ -16,8 +16,12 @@ import jwt
 SECRET = "test-secret-not-for-production-use"
 
 
-def session_cookie(google_id, expires_in=datetime.timedelta(hours=1), key=SECRET):
-    """A session JWT like the one login_callback() puts in the 'token' cookie."""
+def session_cookie(google_id, expires_in=datetime.timedelta(hours=1), key=SECRET, version=None):
+    """
+    A session JWT like the one login_callback() puts in the 'token' cookie,
+    with the account's session version, or without one, like the sessions
+    from before them.
+    """
     pld = {
         "id": google_id,
         "email": f"{google_id}@example.com",
@@ -28,7 +32,10 @@ def session_cookie(google_id, expires_in=datetime.timedelta(hours=1), key=SECRET
         "provider": "google",
     }
     exp = datetime.datetime.now(tz=datetime.timezone.utc) + expires_in
-    return jwt.encode({"pld": pld, "exp": exp, "sub": google_id}, key=key, algorithm="HS256")
+    claims = {"pld": pld, "exp": exp, "sub": google_id}
+    if version is not None:
+        claims["ver"] = version
+    return jwt.encode(claims, key=key, algorithm="HS256")
 
 
 def client_for(server, cookie=None):

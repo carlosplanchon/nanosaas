@@ -39,7 +39,7 @@ from fastapi.templating import Jinja2Templates
 from tortoise import Tortoise
 from tortoise.contrib.fastapi import RegisterTortoise, tortoise_exception_handlers
 from tortoise.exceptions import DoesNotExist
-from tortoise.expressions import Q
+from tortoise.expressions import F, Q
 from tortoise.migrations.api import migrate
 from tortoise.migrations.recorder import MigrationRecorder
 from tortoise.transactions import in_transaction
@@ -171,13 +171,24 @@ async def get_logged_user(
             key=JWT_SIGNING_SECRET_KEY,
             algorithms=["HS256"]
         )
-        return OpenID(**claims["pld"])
+        user = OpenID(**claims["pld"])
     except Exception as error:
         logger.info("Invalid session: %s", error)
         raise HTTPException(
             status_code=401,
             detail="Invalid authentication credentials"
         ) from error
+
+    # A session from before the account's last logout doesn't work anymore.
+    # The ones from before session versions have none: they count as the first.
+    account = await Account.get_or_none(google_id=user.id)
+    if account is None or claims.get("ver", 0) != account.session_version:
+        logger.info("Session of %s ended by a logout", user.id)
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid authentication credentials"
+        )
+    return user
 
 
 class LoginRequired(Exception):
@@ -252,10 +263,23 @@ async def login():
         return await sso.get_login_redirect()
 
 
-@app.get("/auth/logout", response_class=HTMLResponse)
-async def logout(request: Request):
-    """Forget the user's session and return an HTML response."""
-    response = RedirectResponse(url=f"{root_prefix}/thankyou")
+# POST because it ends the account's sessions: with GET, a link from another
+# site could, since the SameSite=lax cookie goes with GET navigations.
+@app.post("/auth/logout", response_class=HTMLResponse)
+async def logout(
+    cookie: str | None = Security(APIKeyCookie(name="token", auto_error=False))
+        ):
+    """End the user's sessions, on every device, and forget the cookie."""
+    if cookie is not None:
+        try:
+            user = await get_logged_user(cookie)
+        except HTTPException:
+            pass  # A session that doesn't work has nothing to end.
+        else:
+            await Account.filter(google_id=user.id).update(session_version=F("session_version") + 1)
+
+    # 303, so the browser follows it with a GET.
+    response = RedirectResponse(url=f"{root_prefix}/thankyou", status_code=303)
     response.delete_cookie(key="token", **SESSION_COOKIE_FLAGS)
     return response
 
@@ -293,7 +317,9 @@ async def login_callback(request: Request):
         {
             "pld": openid.model_dump(),
             "exp": expiration,
-            "sub": openid.id
+            "sub": openid.id,
+            # The account's sessions from before its next logout.
+            "ver": account.session_version
         },
         key=JWT_SIGNING_SECRET_KEY,
         algorithm="HS256"

@@ -62,9 +62,27 @@ async def test_credits_with_the_api_key(account, anon):
     assert r.json() == {"credits": 5}
 
 
-async def test_logout_redirects_to_the_thank_you_page(user):
-    r = await user.get("/auth/logout")
-    assert (r.status_code, r.headers["location"]) == (307, "/thankyou")
+async def test_logout_takes_a_post_and_redirects_to_the_thank_you_page(user):
+    # The panel's button posts to it: a link from another site can't log the user out.
+    assert '<form method="post" action="/auth/logout">' in (await user.get("/userpanel")).text
+    assert (await user.get("/auth/logout")).status_code == 405
+    r = await user.post("/auth/logout")
+    assert (r.status_code, r.headers["location"]) == (303, "/thankyou")
+
+
+async def test_logging_out_ends_every_session_of_the_account(server, account):
+    # Sessions on two devices: one from before session versions, and one from after.
+    sessions = [account.cookie, session_cookie(account.google_id, version=0)]
+    async with client_for(server, sessions[0]) as user:
+        assert (await user.post("/auth/logout")).status_code == 303
+
+    for cookie in sessions:
+        async with client_for(server, cookie) as client:
+            assert (await client.get("/user/credits")).status_code == 401
+            assert (await client.get("/userpanel")).headers["location"] == "/"
+    # The next login's session has the account's new version.
+    async with client_for(server, session_cookie(account.google_id, version=1)) as client:
+        assert (await client.get("/user/credits")).status_code == 200
 
 
 @pytest.mark.parametrize("session", ["missing", "expired", "wrong signature"])

@@ -30,6 +30,9 @@ class Account(Model):
     api_key_hash = fields.CharField(
         max_length=255, null=True, unique=True, source_field="api_key"
     )
+    # Raised at each logout: the sessions from before it, on every device,
+    # stop working (see get_logged_user()). Also a default of the column.
+    session_version = fields.IntField(default=0, db_default=0)
 
     def __str__(self):
         return self.display_name
