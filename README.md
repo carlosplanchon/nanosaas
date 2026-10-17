@@ -148,7 +148,7 @@ Any Google account can log in, and each new account gets `INITIAL_CREDITS` credi
     curl -H "X-API-Key: your_api_key" -H "Content-Type: application/json" -d '{"x": 10, "y": 4}' http://127.0.0.1:8000/api/task/divide
     curl -H "X-API-Key: your_api_key" http://127.0.0.1:8000/api/task_details/your_task_id
     ```
-   Wrong parameters get a 422 error, without spending a credit. `GET /api/task/divide/10/4` still works for older clients, and so does the `api_key` query parameter, but avoid the latter: URLs end up in server and proxy logs. The interactive docs at `/docs` list every route, and under **tasks**, every task with its description and parameters, where you can also try them.
+   Wrong parameters get a 422 error, without spending a credit. `GET /api/task/divide/10/4` still works for older clients, but it's deprecated: browsers and proxies may send a GET again, and this one spends a credit. The `api_key` query parameter still works too, but avoid it: URLs end up in server and proxy logs. The interactive docs at `/docs` list every route, and under **tasks**, every task with its description and parameters, where you can also try them.
 
    To retry a request safely, for example after a timeout, send it with an `Idempotency-Key` header, with a value you pick for each request, like a UUID. Sent again with the same key, the request gets the task it started, without paying for another one, and if it didn't start one, it starts it then. Reusing a key for another task or other parameters gets a 422 error. The panel does the same, so a double click starts one task.
 

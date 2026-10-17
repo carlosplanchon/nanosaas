@@ -7,6 +7,8 @@ import functools
 
 import inspect
 
+import logging
+
 import secrets
 
 import typing
@@ -52,7 +54,7 @@ from taskiq_redis.exceptions import ResultIsMissingError
 from taskiq_task import broker
 from taskiq_task import divide as taskiq_task_divide
 from taskiq_task import ATTEMPTS, LEASE, QUEUE_TIMEOUT, TIME_LIMIT
-from taskiq_task import TaskLost, queue_task
+from taskiq_task import LOG_FORMAT, TaskLost, queue_task
 
 from web.db_models import Account, TaskHistory
 
@@ -65,6 +67,8 @@ from shared import TORTOISE_ORM
 #      --- FASTAPI ---      #
 #                           #
 #############################
+logger = logging.getLogger(__name__)
+
 templates = Jinja2Templates(directory="web/templates")
 
 
@@ -82,6 +86,8 @@ INITIAL_CREDITS: int = CONFIG["app"].get("INITIAL_CREDITS", 25)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Uvicorn sets up only its own loggers: the app's lines go with their time, like the worker's.
+    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
     # Before RegisterTortoise: migrate() starts Tortoise again, which would undo it.
     await migrate_database()
     async with RegisterTortoise(app, config=TORTOISE_ORM):
@@ -168,8 +174,7 @@ async def get_logged_user(
         )
         return OpenID(**claims["pld"])
     except Exception as error:
-        print("Error.")
-        print(error)
+        logger.info("Invalid session: %s", error)
         raise HTTPException(
             status_code=401,
             detail="Invalid authentication credentials"
@@ -521,7 +526,7 @@ async def start_task(
         await queue_task(task.task_name, task_id, parameters, account.google_id)
     except Exception as e:
         # The error goes to the log: it may show where the servers are.
-        print(f"Task initiation failed for {task_id}: {e.__cause__ or e}")
+        logger.error("Task initiation failed for %s: %s", task_id, e.__cause__ or e)
 
         # Redis may have queued it anyway, and only lost its reply. Give
         # the task up, unless a worker already started it.
@@ -530,7 +535,7 @@ async def start_task(
                 status_code=500,
                 detail="Task initiation failed"
             )
-        print(f"Task {task_id} was queued after all: a worker started it.")
+        logger.warning("Task %s was queued after all: a worker started it.", task_id)
 
     return TaskInitOut(id=task_id, message="Task started successfully")
 
@@ -566,7 +571,7 @@ async def refresh_tasks(task_rows: list[TaskHistory]) -> None:
         try:
             await refresh_task(task_row)
         except Exception as e:
-            print(f"Error updating task {task_row.task_id}: {e}")
+            logger.error("Error updating task %s: %s", task_row.task_id, e)
 
 
 async def refresh_overdue_tasks(google_id: str) -> None:
@@ -666,32 +671,28 @@ for task_name, task in sorted(broker.get_all_tasks().items()):
     add_task_routes(task_name, task)
 
 
-# divide's own routes, still here for the clients that use them.
-@app.post("/task/divide/{x}/{y}", response_model=TaskInitOut)
+# divide's own routes, still here for the clients that use them, and deprecated in /docs.
+@app.post("/task/divide/{x}/{y}", response_model=TaskInitOut, deprecated=True)
 async def divide(
     x: int,
     y: int,
     user: OpenID = Depends(get_logged_user)
         ):
+    """Start divide with x and y in the path. Use POST /task/divide, with them in a JSON object."""
     account = await Account.get(google_id=user.id)
     return await start_task(account, taskiq_task_divide, {"x": x, "y": y})
 
 
-@app.get("/api/task/divide/{x}/{y}", response_model=TaskInitOut)
+@app.get("/api/task/divide/{x}/{y}", response_model=TaskInitOut, deprecated=True)
 async def divide_with_api_key(
     x: int,
     y: int,
     account: Account = Depends(get_api_key_account)
         ):
     """
-    Endpoint for initiating a division task using an API key.
-
-    Args:
-        x (int): Dividend.
-        y (int): Divisor.
-
-    Returns:
-        TaskInitOut: Details about the initiated task.
+    Start divide with x and y in the path. Use POST /api/task/divide, with
+    them in a JSON object: browsers and proxies may send a GET again, and
+    this one spends a credit.
     """
     return await start_task(account, taskiq_task_divide, {"x": x, "y": y})
 
@@ -717,7 +718,7 @@ async def get_status(task_id: str, user: OpenID = Depends(get_logged_user)):
             detail="Task not found or you do not have permission to access it"
         )
     except Exception as e:
-        print(f"Error retrieving task status {task_id}: {e}")
+        logger.error("Error retrieving task status %s: %s", task_id, e)
         raise HTTPException(
             status_code=500,
             detail="Error retrieving task status"
@@ -755,7 +756,7 @@ async def render_task_details_page(
             detail="Task not found or you do not have permission to access it"
         )
     except Exception as e:
-        print(f"Error retrieving task details {task_id}: {e}")
+        logger.error("Error retrieving task details %s: %s", task_id, e)
         raise HTTPException(
             status_code=500,
             detail="Error retrieving task details"
@@ -798,7 +799,7 @@ async def get_task_details_json_from_user(
             detail="Task not found or you do not have permission to access it"
         )
     except Exception as e:
-        print(f"Error retrieving task details {task_id}: {e}")
+        logger.error("Error retrieving task details %s: %s", task_id, e)
         raise HTTPException(
             status_code=500,
             detail="Error retrieving task details"
@@ -847,7 +848,7 @@ async def get_task_details_json(
         # Let the 404 above through instead of turning it into a 500.
         raise
     except Exception as e:
-        print(f"Error retrieving task details {task_id}: {e}")
+        logger.error("Error retrieving task details %s: %s", task_id, e)
         raise HTTPException(
             status_code=500,
             detail="Error retrieving task details"
@@ -871,7 +872,7 @@ async def migrate_database() -> None:
         "SELECT to_regclass('account') IS NOT NULL AS created"
     )
     if tables["created"] and not applied:
-        print("Recording the existing tables as migration models.0001_initial")
+        logger.info("Recording the existing tables as migration models.0001_initial")
         await migrate(config=TORTOISE_ORM, target="models.0001_initial", fake=True, direction="forward")
     await migrate(config=TORTOISE_ORM, direction="forward")
 

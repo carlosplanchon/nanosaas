@@ -6,6 +6,7 @@ import asyncpg
 import pytest
 from tortoise import Tortoise
 from tortoise.context import TortoiseContext
+from tortoise.migrations.api import migrate
 from tortoise.migrations.autodetector import MigrationAutodetector
 
 from tests.helpers import client_for, create_account, insert_task
@@ -21,6 +22,14 @@ async def test_a_new_database_gets_every_migration(db):
     assert [tuple(row) for row in rows] == MIGRATIONS
 
 
+async def test_the_pending_tasks_are_found_by_an_index(db):
+    # The workers look for the ones whose lease expired every few seconds.
+    indexdef = await db.fetchval(
+        "SELECT indexdef FROM pg_indexes WHERE tablename = 'taskhistory' AND indexdef LIKE '%(status)'"
+    )
+    assert indexdef is not None
+
+
 async def test_the_migrations_match_the_models(app_module):
     async with TortoiseContext() as ctx:
         await ctx.init(config=app_module.TORTOISE_ORM)
@@ -34,21 +43,23 @@ async def test_a_database_from_before_the_migrations_keeps_its_data(services, st
     await admin.execute(f'CREATE DATABASE "{name}"')
     await admin.close()
 
-    # Older versions created the tables with generate_schemas.
+    # Older versions created the tables with generate_schemas, as they are in the
+    # first migration, without recording any migration.
     host = f"{services.db_user}:{services.db_password}@{services.db_host}:{services.db_port}"
-    await Tortoise.init(db_url=f"postgres://{host}/{name}", modules={"models": ["web.db_models"]})
+    config = {
+        "connections": {"default": f"postgres://{host}/{name}"},
+        "apps": {
+            "models": {"models": ["web.db_models"], "default_connection": "default", "migrations": "web.migrations"}
+        },
+    }
     try:
-        await Tortoise.generate_schemas()
+        await migrate(config=config, target="models.0001_initial", direction="forward")
     finally:
         await Tortoise.close_connections()
 
     db = await asyncpg.connect(f"postgresql://{host}/{name}")
     try:
-        # Without the columns that the later migrations add.
-        await db.execute(
-            "ALTER TABLE taskhistory DROP COLUMN started_at, DROP COLUMN idempotency_key, "
-            "DROP COLUMN lease_until, DROP COLUMN attempts"
-        )
+        await db.execute("DROP TABLE tortoise_migrations")
         account = await create_account(db)
         task_id = await insert_task(db, account, status="SUCCESS", result=2.0)
 

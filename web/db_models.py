@@ -85,8 +85,9 @@ class TaskHistory(Model):
     task_id = fields.CharField(max_length=255, unique=True)
     task_type = fields.CharField(max_length=50)
     parameters = fields.JSONField()
-    # PENDING until the task ends as SUCCESS or FAILURE.
-    status = fields.CharField(max_length=50, default="PENDING")
+    # PENDING until the task ends as SUCCESS or FAILURE. Indexed: every few
+    # seconds, the workers look for the pending tasks whose lease expired.
+    status = fields.CharField(max_length=50, default="PENDING", db_index=True)
     result = fields.JSONField(null=True)  # Store task results or error details
     created_at = fields.DatetimeField(auto_now_add=True)
     # When a worker took the task from the queue, for its current run (see start()).

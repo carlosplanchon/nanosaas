@@ -142,6 +142,9 @@ async def test_the_docs_show_each_task_with_its_parameters(anon):
     ]
     # The panel's routes stay out of them.
     assert "/task/divide" not in schema["paths"]
+    # divide's own routes, with x and y in the path, are deprecated.
+    assert schema["paths"]["/api/task/divide/{x}/{y}"]["get"]["deprecated"] is True
+    assert schema["paths"]["/task/divide/{x}/{y}"]["post"]["deprecated"] is True
 
 
 async def test_any_task_starts_with_its_parameters_in_json(account, user, anon):

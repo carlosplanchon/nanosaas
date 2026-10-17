@@ -24,6 +24,10 @@ import logging
 import time
 
 
+# TaskIQ's, which the API's log lines use too: with their time, logger and level.
+LOG_FORMAT = "[%(asctime)s][%(name)s][%(levelname)-7s][%(processName)s] %(message)s"
+logger = logging.getLogger(__name__)
+
 # Seconds a task can wait in the queue, and run, before it's given up.
 QUEUE_TIMEOUT = CONFIG["taskiq"].get("queue_timeout", 600)
 TIME_LIMIT = CONFIG["taskiq"].get("time_limit", 600)
@@ -66,7 +70,7 @@ class SaveFinishedTasks(TaskiqMiddleware):
             await TaskHistory.finish(message.task_id, result.return_value, result.error)
         except Exception as e:
             # The result still reaches the result backend, and the API saves it from there.
-            print(f"Error saving task {message.task_id}: {e}")
+            logger.error("Error saving task %s: %s", message.task_id, e)
 
 
 class Broker(ListQueueBroker):
@@ -81,7 +85,7 @@ class Broker(ListQueueBroker):
                 async with Redis(connection_pool=self.connection_pool) as redis:
                     popped = await redis.brpop([self.queue_name], timeout=1)
             except RedisError as e:
-                print(f"Can't get tasks from Redis, trying again in a second: {e}")
+                logger.warning("Can't get tasks from Redis, trying again in a second: %s", e)
                 await asyncio.sleep(1)
                 continue
             if popped:
@@ -116,7 +120,7 @@ async def renew_lease(task_id: str, started_at: datetime.datetime) -> None:
                 return
         except Exception as e:
             # The next one may get through: the lease lasts LEASE seconds.
-            print(f"Can't renew the lease of task {task_id}: {e}")
+            logger.warning("Can't renew the lease of task %s: %s", task_id, e)
 
 
 async def requeue_lost_tasks() -> None:
@@ -132,14 +136,14 @@ async def requeue_lost_tasks() -> None:
                 status="PENDING", started_at__isnull=False, lease_until__lt=timezone.now()
             ).prefetch_related("user")
         except Exception as e:
-            print(f"Can't look for the tasks that lost their worker: {e}")
+            logger.error("Can't look for the tasks that lost their worker: %s", e)
             continue
         for task in lost:
             try:
                 await requeue(task)
             except Exception as e:
                 # If it was released, it fails at the API's deadline, as TaskLost.
-                print(f"Can't queue task {task.task_id} again: {e}")
+                logger.error("Can't queue task %s again: %s", task.task_id, e)
 
 
 async def requeue(task: TaskHistory) -> None:
@@ -160,10 +164,12 @@ async def requeue(task: TaskHistory) -> None:
         return
     if task.attempts >= ATTEMPTS:
         if await TaskHistory.finish(task.task_id, error=TaskLost()):
-            print(f"Task {task.task_id} lost its worker in each of its {task.attempts} runs: failed.")
+            logger.error("Task %s lost its worker in each of its %d runs: failed.", task.task_id, task.attempts)
     elif await TaskHistory.release(task.task_id, task.started_at):
         await queue_task(task.task_type, task.task_id, task.parameters, task.user.google_id)
-        print(f"Task {task.task_id} lost its worker: queued again, after {task.attempts} of {ATTEMPTS} runs.")
+        logger.warning(
+            "Task %s lost its worker: queued again, after %d of %d runs.", task.task_id, task.attempts, ATTEMPTS
+        )
 
 
 class Receiver(BaseReceiver):
@@ -195,14 +201,14 @@ class Receiver(BaseReceiver):
             started_at = await TaskHistory.start(message.task_id, datetime.timedelta(seconds=LEASE))
         except Exception as e:
             # Another copy may be running. If none is, it fails at its deadline.
-            print(f"Can't start task {message.task_id}, so it's skipped: {e}")
+            logger.error("Can't start task %s, so it's skipped: %s", message.task_id, e)
             return self.skipped(message)
         if started_at is None:
-            print(f"Task {message.task_id} was started already, or given up by the API: skipped.")
+            logger.info("Task %s was started already, or given up by the API: skipped.", message.task_id)
             return self.skipped(message)
 
         if time.time() > float(message.labels.get("queue_deadline", "inf")):
-            print(f"Task {message.task_id} waited in the queue longer than queue_timeout: dropped.")
+            logger.warning("Task %s waited in the queue longer than queue_timeout: dropped.", message.task_id)
             return TaskiqResult(
                 is_err=True,
                 return_value=None,
@@ -218,7 +224,7 @@ class Receiver(BaseReceiver):
             renewing.cancel()
         if isinstance(result.error, TaskError):
             # Instead of the traceback that HideTaskErrors keeps out.
-            print(f"Task {message.task_id} failed with a TaskError: {result.error}")
+            logger.info("Task %s failed with a TaskError: %s", message.task_id, result.error)
         return result
 
 
@@ -240,10 +246,7 @@ logging.getLogger("taskiq.receiver.receiver").addFilter(HideTaskErrors())
 @broker.on_event(TaskiqEvents.WORKER_STARTUP)
 async def startup(state: TaskiqState):
     # taskiq 0.13.0 doesn't set up logging in forkserver workers, the default since Python 3.14.
-    logging.basicConfig(
-        level=logging.INFO,
-        format="[%(asctime)s][%(name)s][%(levelname)-7s][%(processName)s] %(message)s",
-    )
+    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
     state.tortoise = await Tortoise.init(config=TORTOISE_ORM)
     state.requeuing = asyncio.create_task(requeue_lost_tasks())
 
