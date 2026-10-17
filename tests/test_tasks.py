@@ -17,7 +17,7 @@ pytestmark = [pytest.mark.anyio, pytest.mark.usefixtures("worker")]
 
 
 async def test_api_key_task_charges_one_credit_and_returns_the_result(account, user, anon):
-    r = await anon.get("/api/task/divide/10/4", params={"api_key": account.api_key})
+    r = await anon.post("/api/task/divide", json={"x": 10, "y": 4}, params={"api_key": account.api_key})
     assert r.status_code == 200
     data = await wait_until_done(user, r.json()["id"])
     assert data["result"] == 2.5
@@ -25,7 +25,7 @@ async def test_api_key_task_charges_one_credit_and_returns_the_result(account, u
 
 
 async def test_failed_task_gives_the_credit_back(account, user, anon):
-    r = await anon.get("/api/task/divide/1/0", params={"api_key": account.api_key})
+    r = await anon.post("/api/task/divide", json={"x": 1, "y": 0}, params={"api_key": account.api_key})
     assert r.status_code == 200
     data = await wait_until_done(user, r.json()["id"])
     # The message of a TaskError is for the user, so it's saved.
@@ -142,9 +142,6 @@ async def test_the_docs_show_each_task_with_its_parameters(anon):
     ]
     # The panel's routes stay out of them.
     assert "/task/divide" not in schema["paths"]
-    # divide's own routes, with x and y in the path, are deprecated.
-    assert schema["paths"]["/api/task/divide/{x}/{y}"]["get"]["deprecated"] is True
-    assert schema["paths"]["/task/divide/{x}/{y}"]["post"]["deprecated"] is True
 
 
 async def test_any_task_starts_with_its_parameters_in_json(account, user, anon):
@@ -207,14 +204,13 @@ async def test_unknown_task_gives_404(user, route):
 
 async def test_creating_a_task_with_the_cookie_needs_post(account, user):
     # A GET that spends credits could be triggered by a link from another site.
-    assert (await user.get("/task/divide/1/1")).status_code == 405
     assert (await user.get("/task/divide")).status_code == 405
     assert await account.credits() == 5
 
 
 async def test_concurrent_requests_cannot_spend_more_credits_than_the_account_has(account, user):
     await account.set_credits(2)
-    rs = await asyncio.gather(*(user.post("/task/divide/6/3") for _ in range(10)))
+    rs = await asyncio.gather(*(user.post("/task/divide", json={"x": 6, "y": 3}) for _ in range(10)))
     accepted = [r.json()["id"] for r in rs if r.status_code == 200]
     assert len(accepted) == 2
     assert sum(r.status_code == 403 for r in rs) == 8
@@ -234,8 +230,8 @@ async def test_regenerating_the_api_key_does_not_undo_credit_changes(account, us
 
     loops = [asyncio.create_task(regenerate_api_key()) for _ in range(3)]
     rs = await asyncio.gather(
-        *(user.post("/task/divide/6/3") for _ in range(10)),
-        *(user.post("/task/divide/6/0") for _ in range(5)),
+        *(user.post("/task/divide", json={"x": 6, "y": 3}) for _ in range(10)),
+        *(user.post("/task/divide", json={"x": 6, "y": 0}) for _ in range(5)),
     )
     assert all(r.status_code == 200 for r in rs)
     done = await asyncio.gather(*(wait_until_done(user, r.json()["id"]) for r in rs))
@@ -253,7 +249,7 @@ async def test_with_the_broker_down_the_credit_comes_back_and_no_row_is_left(
 ):
     async with client_for(broker_down_server, account.cookie) as client:
         start = time.monotonic()
-        r = await client.post("/task/divide/1/1")
+        r = await client.post("/task/divide", json={"x": 1, "y": 1})
         elapsed = time.monotonic() - start
     assert r.status_code == 500
     # Redis refuses the connection, so it fails right away.
@@ -271,7 +267,7 @@ async def test_with_the_broker_down_the_errors_keep_its_address_in_the_server_lo
 
     async with client_for(broker_down_server, account.cookie) as user:
         rs = [
-            await user.post("/task/divide/1/1"),
+            await user.post("/task/divide", json={"x": 1, "y": 1}),
             await user.get(f"/task/status/{task_id}"),
             await user.get(f"/api/task_details_from_user/{task_id}"),
             await user.get(f"/api/task_details/{task_id}", headers={"X-API-Key": account.api_key}),

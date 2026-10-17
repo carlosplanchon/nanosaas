@@ -49,7 +49,7 @@ async def attempts(db, task_id):
 
 async def start_divide(server, account):
     async with client_for(server, account.cookie) as user:
-        return (await user.post("/task/divide/6/3")).json()["id"]
+        return (await user.post("/task/divide", json={"x": 6, "y": 3})).json()["id"]
 
 
 async def kill_while_running(worker, task_id):
@@ -124,7 +124,7 @@ async def test_a_task_that_waits_too_long_in_the_queue_is_dropped(
 ):
     async with client_for(short_limits_server, account.cookie) as user:
         # No worker yet: it waits in the queue longer than queue_timeout (2 s).
-        r = await user.post("/task/divide/6/3")
+        r = await user.post("/task/divide", json={"x": 6, "y": 3})
         task_id = r.json()["id"]
         await asyncio.sleep(3)
 
@@ -139,7 +139,7 @@ async def test_a_task_that_runs_too_long_is_stopped(short_limits_server, start_w
     start_worker(short_limits_server)
     async with client_for(short_limits_server, account.cookie) as user:
         # divide takes 5 s: more than time_limit (4 s).
-        r = await user.post("/task/divide/6/3")
+        r = await user.post("/task/divide", json={"x": 6, "y": 3})
         data = await wait_until_done(user, r.json()["id"])
     assert (data["status"], data["result"]) == ("FAILURE", {**ERROR, "error": "TimeoutError"})
     assert await account.credits() == 5
@@ -211,5 +211,5 @@ async def test_a_new_task_can_use_the_credit_of_a_lost_one(db, account, user, wo
     task_id = await insert_task(db, account)
     await age_task(db, task_id, datetime.timedelta(days=1))
 
-    assert (await user.post("/task/divide/6/3")).status_code == 200
+    assert (await user.post("/task/divide", json={"x": 6, "y": 3})).status_code == 200
     assert (await task_row(db, task_id))[0] == "FAILURE"

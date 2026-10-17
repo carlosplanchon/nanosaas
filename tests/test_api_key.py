@@ -14,7 +14,12 @@ pytestmark = pytest.mark.anyio
 
 REPO = Path(__file__).resolve().parent.parent
 
-API_ROUTES = ("/api/user_credits", "/api/task/divide/1/1", "/api/task_details/no-such-task")
+# Each API route, with what it takes besides the key.
+API_REQUESTS = (
+    ("GET", "/api/user_credits", {}),
+    ("POST", "/api/task/divide", {"json": {"x": 1, "y": 1}}),
+    ("GET", "/api/task_details/no-such-task", {}),
+)
 
 
 async def test_the_api_routes_take_the_key_in_the_header(account, anon):
@@ -22,7 +27,7 @@ async def test_the_api_routes_take_the_key_in_the_header(account, anon):
     r = await anon.get("/api/user_credits", headers=headers)
     assert r.json() == {"credits": 5}
 
-    r = await anon.get("/api/task/divide/10/4", headers=headers)
+    r = await anon.post("/api/task/divide", json={"x": 10, "y": 4}, headers=headers)
     assert r.status_code == 200
     # The credit is reserved when the task is queued.
     assert await account.credits() == 4
@@ -38,14 +43,14 @@ async def test_a_wrong_api_key_gives_401(anon, where):
         wrong = {"headers": {"X-API-Key": "wrong"}}
     else:
         wrong = {"params": {"api_key": "wrong"}}
-    for path in API_ROUTES:
-        assert (await anon.get(path, **wrong)).status_code == 401, path
+    for method, path, payload in API_REQUESTS:
+        assert (await anon.request(method, path, **payload, **wrong)).status_code == 401, path
 
 
 async def test_a_missing_api_key_gives_401(anon):
     # When the key was a required query parameter, this gave a 422.
-    for path in API_ROUTES:
-        assert (await anon.get(path)).status_code == 401, path
+    for method, path, payload in API_REQUESTS:
+        assert (await anon.request(method, path, **payload)).status_code == 401, path
 
 
 async def test_the_header_takes_precedence_over_the_query(account, anon):

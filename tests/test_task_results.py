@@ -33,7 +33,7 @@ def failed(error):
 
 
 async def test_the_worker_saves_the_result_even_if_taskiq_forgets_it(db, account, user, taskiq_client):
-    r = await user.post("/task/divide/6/3")
+    r = await user.post("/task/divide", json={"x": 6, "y": 3})
     assert r.status_code == 200
     task_id = r.json()["id"]
 

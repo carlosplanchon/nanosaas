@@ -52,7 +52,6 @@ from taskiq import AsyncTaskiqDecoratedTask
 from taskiq_redis.exceptions import ResultIsMissingError
 
 from taskiq_task import broker
-from taskiq_task import divide as taskiq_task_divide
 from taskiq_task import ATTEMPTS, LEASE, QUEUE_TIMEOUT, TIME_LIMIT
 from taskiq_task import LOG_FORMAT, TaskLost, queue_task
 
@@ -669,32 +668,6 @@ def add_task_routes(name: str, task: AsyncTaskiqDecoratedTask) -> None:
 
 for task_name, task in sorted(broker.get_all_tasks().items()):
     add_task_routes(task_name, task)
-
-
-# divide's own routes, still here for the clients that use them, and deprecated in /docs.
-@app.post("/task/divide/{x}/{y}", response_model=TaskInitOut, deprecated=True)
-async def divide(
-    x: int,
-    y: int,
-    user: OpenID = Depends(get_logged_user)
-        ):
-    """Start divide with x and y in the path. Use POST /task/divide, with them in a JSON object."""
-    account = await Account.get(google_id=user.id)
-    return await start_task(account, taskiq_task_divide, {"x": x, "y": y})
-
-
-@app.get("/api/task/divide/{x}/{y}", response_model=TaskInitOut, deprecated=True)
-async def divide_with_api_key(
-    x: int,
-    y: int,
-    account: Account = Depends(get_api_key_account)
-        ):
-    """
-    Start divide with x and y in the path. Use POST /api/task/divide, with
-    them in a JSON object: browsers and proxies may send a GET again, and
-    this one spends a credit.
-    """
-    return await start_task(account, taskiq_task_divide, {"x": x, "y": y})
 
 
 @app.get("/task/status/{task_id}", response_model=TaskOut)
