@@ -95,7 +95,7 @@ Requires Python 3.11 or newer, PostgreSQL and Redis 6 or newer.
     broker="redis://127.0.0.1:6379/0"
     backend="redis://127.0.0.1:6379/0"
     ```
-    The backend creates the tables, and applies new migrations, when it starts. To run Redis in Docker: `docker run -p 127.0.0.1:6379:6379 redis`. Binding the port to `127.0.0.1` keeps Redis reachable only from this machine: ports published by Docker skip firewalls like ufw.
+    The backend creates the tables, and applies new migrations, when it starts. To run Redis in Docker: `docker run -p 127.0.0.1:6379:6379 redis`. Binding the port to `127.0.0.1` keeps Redis reachable only from this machine: ports published by Docker skip firewalls like ufw. For the queued tasks to survive a crash of Redis, turn on its append-only file, as `docs/redis_conf.txt` explains.
 
 3. Start the backend:
     ```bash
@@ -161,7 +161,7 @@ Any Google account can log in, and each new account gets `INITIAL_CREDITS` credi
 
    A task that waits in the queue longer than `queue_timeout` seconds is dropped, failing as `TaskExpired`, and one that runs longer than `time_limit` seconds is stopped, failing as `TimeoutError` (10 minutes each by default, set in `config.toml`): either way its credit comes back.
 
-   A task whose worker dies runs again, in another worker. While a worker runs a task, it renews the task's lease every few seconds, and the workers queue again the tasks whose lease went `lease` seconds (30 by default) without renewal, up to `attempts` runs in all (3 by default): after the last one, the task fails as `TaskLost`, and its credit comes back. A task runs again from the start, so make the tasks that change things outside NanoSaaS safe to run twice. A task that never ends otherwise, for example because Redis lost it, also fails as `TaskLost`, once each of its runs could have waited in the queue and run until stopped (about an hour by default).
+   A task whose worker dies runs again, in another worker. While a worker runs a task, it renews the task's lease every few seconds, and the workers queue again the tasks whose lease went `lease` seconds (30 by default) without renewal, up to `attempts` runs in all (3 by default): after the last one, the task fails as `TaskLost`, and its credit comes back. A task runs again from the start, so make the tasks that change things outside NanoSaaS safe to run twice. A task that never ends otherwise, for example because Redis lost it, also fails as `TaskLost`: one that never started, once it could have waited in the queue (`queue_timeout` and one more minute), and one that did, once each of its runs could have waited in the queue and run until stopped (about an hour by default).
 
    Only one worker runs a task at a time. When Redis queues a task but its reply to the backend is lost, redis-py sends the task again, and when there's no reply at all, the backend gives the task up and its credit back, though Redis may have queued it. So the worker marks each task as started in the task history before running it, and skips the copies of a task that already started, and the tasks given up.
 
@@ -206,6 +206,10 @@ Any Google account can log in, and each new account gets `INITIAL_CREDITS` credi
 - A database created before the migrations already has the tables of the first one: the first time this version starts, that migration is only recorded as applied, and the later ones are applied as usual. If it's from before API keys became unique, add their index by hand:
     ```sql
     ALTER TABLE account ADD CONSTRAINT account_api_key_key UNIQUE (api_key);
+    ```
+- A Redis started with an older `compose.yaml` only saved snapshots, and this one starts it empty: the tasks waiting in its queue would be lost, and fail as `TaskLost`. To keep them, turn on its append-only file while it runs, before you update the app:
+    ```bash
+    docker compose exec redis redis-cli config set appendonly yes
     ```
 - A database created before API keys were hashed has them in plain text. Run `scripts/hash_api_keys.sql` once, with the app stopped, before starting this version; the keys keep working:
     ```bash

@@ -23,6 +23,18 @@ ERROR = {"status": "error", "message": "The task failed"}
 # With the default queue_timeout, time_limit, lease and attempts: 3 runs of
 # 600 + 600 + 2 * 30 seconds, plus a minute.
 DEADLINE = datetime.timedelta(seconds=3 * (600 + 600 + 2 * 30) + 60)
+# For a task that never started: the default queue_timeout, plus a minute.
+QUEUE_DEADLINE = datetime.timedelta(seconds=600 + 60)
+MINUTE = datetime.timedelta(minutes=1)
+
+
+async def mark_started(db, task_id):
+    """As if a worker started the task, with a lease for a day: no worker queues it again."""
+    await db.execute(
+        "UPDATE taskhistory SET started_at = created_at, attempts = 1, lease_until = now() + interval '1 day' "
+        "WHERE task_id = $1",
+        task_id,
+    )
 
 
 @pytest.fixture
@@ -149,32 +161,42 @@ async def test_a_worker_waiting_for_tasks_stops_when_told(short_limits_server, s
 
 
 async def test_a_task_is_given_up_only_after_its_deadline(db, account, user, taskiq_client):
-    # Three tasks hold credits, and TaskIQ knows nothing about two of them.
-    await account.set_credits(2)
-    almost = await insert_task(db, account)
-    await age_task(db, almost, DEADLINE - datetime.timedelta(minutes=1))
+    # Tasks that hold credits, and TaskIQ knows nothing about all but one.
+    await account.set_credits(0)
+    # One that never started can't anymore once it waited queue_timeout: a worker would drop it.
+    waiting = await insert_task(db, account)
+    await age_task(db, waiting, QUEUE_DEADLINE - MINUTE)
+    never_started = await insert_task(db, account)
+    await age_task(db, never_started, QUEUE_DEADLINE + MINUTE)
+    # One that started has until each of its runs could have ended.
+    running = await insert_task(db, account)
+    await age_task(db, running, DEADLINE - MINUTE)
+    await mark_started(db, running)
     lost = await insert_task(db, account)
-    await age_task(db, lost, DEADLINE + datetime.timedelta(minutes=1))
+    await age_task(db, lost, DEADLINE + MINUTE)
+    await mark_started(db, lost)
     # The worker couldn't save this one, but TaskIQ has its result.
     done = await insert_task(db, account)
-    await age_task(db, done, DEADLINE + datetime.timedelta(minutes=1))
+    await age_task(db, done, DEADLINE + MINUTE)
     await taskiq_client.result_backend.set_result(
         done, TaskiqResult(is_err=False, return_value=2.0, execution_time=0)
     )
 
     assert (await user.get("/user/task_history")).status_code == 200
-    assert await task_row(db, almost) == ("PENDING", None)
+    assert await task_row(db, waiting) == ("PENDING", None)
+    assert await task_row(db, never_started) == ("FAILURE", {**ERROR, "error": "TaskLost"})
+    assert await task_row(db, running) == ("PENDING", None)
     assert await task_row(db, lost) == ("FAILURE", {**ERROR, "error": "TaskLost"})
     assert await task_row(db, done) == ("SUCCESS", 2.0)
-    assert await account.credits() == 3
+    assert await account.credits() == 2
 
 
 @pytest.mark.parametrize("via", ["cookie", "api_key"])
 async def test_reading_the_credits_gives_back_those_of_lost_tasks(via, db, account, user, anon):
-    # The only credit left is held by a task lost a day ago.
+    # The only credit left is held by a task that never started, and can't anymore.
     await account.set_credits(0)
     task_id = await insert_task(db, account)
-    await age_task(db, task_id, datetime.timedelta(days=1))
+    await age_task(db, task_id, QUEUE_DEADLINE + MINUTE)
 
     if via == "cookie":
         r = await user.get("/user/credits")

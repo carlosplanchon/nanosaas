@@ -32,8 +32,10 @@ services:
 
   redis:
     image: redis:7-alpine
-    # Saves the queued tasks to disk every minute, so they survive a restart.
-    command: redis-server --save 60 1 --loglevel warning
+    # Writes every change to disk within a second, in its append-only file, so the
+    # queued tasks survive a restart, and a crash. A Redis that only saved snapshots
+    # before needs a step first, or it starts empty: see the README's Development Notes.
+    command: redis-server --appendonly yes --appendfsync everysec --loglevel warning
     volumes:
       - redis-data:/data
     healthcheck:

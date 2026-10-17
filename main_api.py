@@ -37,6 +37,7 @@ from fastapi.templating import Jinja2Templates
 from tortoise import Tortoise
 from tortoise.contrib.fastapi import RegisterTortoise, tortoise_exception_handlers
 from tortoise.exceptions import DoesNotExist
+from tortoise.expressions import Q
 from tortoise.migrations.api import migrate
 from tortoise.migrations.recorder import MigrationRecorder
 from tortoise.transactions import in_transaction
@@ -428,6 +429,8 @@ async def serve_page(
 # of its runs it can wait in the queue and run until it's stopped, and a run whose
 # worker died is queued again within twice its lease.
 TASK_DEADLINE = datetime.timedelta(seconds=ATTEMPTS * (QUEUE_TIMEOUT + TIME_LIMIT + 2 * LEASE) + 60)
+# Sooner for a task that never started: past its time in the queue, a worker would drop it.
+QUEUE_DEADLINE = datetime.timedelta(seconds=QUEUE_TIMEOUT + 60)
 
 
 @functools.cache
@@ -539,7 +542,7 @@ async def refresh_task(task_row: TaskHistory) -> None:
     The worker saves each task when it ends. This covers the ones it
     couldn't save (for example, with the database down), as long as the
     result backend still has their result: it forgets results after a day.
-    A task that never ends fails at TASK_DEADLINE, giving its credit back.
+    A task that never ends fails at its deadline, giving its credit back.
     """
     if task_row.status != "PENDING":
         return
@@ -547,7 +550,9 @@ async def refresh_task(task_row: TaskHistory) -> None:
     try:
         result = await broker.result_backend.get_result(task_row.task_id)
     except ResultIsMissingError:
-        if task_row.created_at < datetime.datetime.now(tz=datetime.timezone.utc) - TASK_DEADLINE:
+        never_started = task_row.started_at is None and task_row.attempts == 0
+        deadline = QUEUE_DEADLINE if never_started else TASK_DEADLINE
+        if task_row.created_at < datetime.datetime.now(tz=datetime.timezone.utc) - deadline:
             await TaskHistory.finish(task_row.task_id, error=TaskLost())
     else:
         await TaskHistory.finish(task_row.task_id, result.return_value, result.error)
@@ -565,10 +570,13 @@ async def refresh_tasks(task_rows: list[TaskHistory]) -> None:
 
 
 async def refresh_overdue_tasks(google_id: str) -> None:
-    """Refresh the account's pending tasks past TASK_DEADLINE, so the credits are right."""
-    created_before = datetime.datetime.now(tz=datetime.timezone.utc) - TASK_DEADLINE
+    """Refresh the account's pending tasks past their deadline, so the credits are right."""
+    now = datetime.datetime.now(tz=datetime.timezone.utc)
     overdue = await TaskHistory.filter(
-        user__google_id=google_id, created_at__lt=created_before, status="PENDING"
+        Q(created_at__lt=now - TASK_DEADLINE)
+        | Q(created_at__lt=now - QUEUE_DEADLINE, started_at__isnull=True, attempts=0),
+        user__google_id=google_id,
+        status="PENDING",
     )
     await refresh_tasks(overdue)
 

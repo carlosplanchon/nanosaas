@@ -1,6 +1,13 @@
-To have Redis persistence, which is very good, add this to /etc/redis/redis.conf,
-then restart Redis with sudo systemctl restart redis
+For the queued tasks to survive a restart of Redis, and a crash, turn on its
+append-only file: Redis writes every change to it within a second.
 
-save 900 1
-save 300 10
-save 60 10000
+On a Redis that already has data, turn it on while Redis runs, so it writes its
+data to the file first. Restarting it with the setting, before that, starts it
+empty:
+
+redis-cli config set appendonly yes
+
+Then add this to /etc/redis/redis.conf, so it stays on after a restart:
+
+appendonly yes
+appendfsync everysec
