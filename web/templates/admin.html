@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Admin</title>
+    <link rel="icon" type="image/svg+xml" href="{{ root_prefix }}/web/static/nanosaas_logo.svg">
+    <!-- Include Alpine.js -->
+    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.17.4/dist/cdn.min.js" integrity="sha384-5/joNqFnRyVWzXp99bHot6RHG+EksGp+USSgZwPar7T9SD9PKKER37n/8bXBAZGd" crossorigin="anonymous" defer></script>
+    <!-- Include Tailwind CSS -->
+    <link rel="stylesheet" href="{{ root_prefix }}/web/static/tailwind.css">
+</head>
+<body class="bg-gray-100 font-sans leading-normal tracking-normal">
+    <div class="container mx-auto mt-10">
+        <div class="flex justify-between items-center mb-8">
+            <h1 class="text-3xl font-bold text-gray-700">Admin</h1>
+            <a href="{{ root_prefix }}/userpanel">
+                <button class="bg-green-500 hover:bg-green-600 text-white font-semibold py-2 px-4 rounded-md">
+                    User Panel
+                </button>
+            </a>
+        </div>
+
+        <!-- The accounts, to give them credits -->
+        <div x-data="accountManager()" class="bg-white p-6 rounded-lg shadow-md w-full mx-auto">
+            <div class="flex flex-col md:flex-row items-center justify-center gap-4 mb-6">
+                <label class="block text-gray-700">
+                    Email:
+                    <input type="text" x-model="search" x-on:input.debounce.300ms="fetchAccounts()" placeholder="Search" class="mt-1 p-2 border rounded-md w-full md:w-48">
+                </label>
+            </div>
+
+            <div class="overflow-x-auto">
+                <table class="table-auto w-full border-collapse border border-gray-300">
+                    <thead>
+                        <tr class="bg-gray-200">
+                            <th class="border p-2">Email</th>
+                            <th class="border p-2">Name</th>
+                            <th class="border p-2">Credits</th>
+                            <th class="border p-2">Pending Tasks</th>
+                            <th class="border p-2">Created At</th>
+                            <th class="border p-2">Add Credits</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <template x-for="account in accounts" :key="account.id">
+                            <tr class="hover:bg-gray-100">
+                                <td class="border p-2 text-center" x-text="account.email"></td>
+                                <td class="border p-2 text-center" x-text="account.display_name"></td>
+                                <td class="border p-2 text-center" x-text="account.credits"></td>
+                                <td class="border p-2 text-center" x-text="account.pending_tasks"></td>
+                                <td class="border p-2 text-center" x-text="new Date(account.created_at).toLocaleString()"></td>
+                                <td class="border p-2 text-center">
+                                    <div class="flex gap-4 items-center justify-center">
+                                        <input type="number" min="1" x-model="adding[account.id]" class="mt-1 p-2 border rounded-md w-full md:w-48">
+                                        <button x-on:click="addCredits(account)" class="bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded-md">
+                                            Add
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function accountManager() {
+            return {
+                search: '',
+                accounts: [],
+                // The credits typed for each account, by its ID.
+                adding: {},
+
+                init() {
+                    this.fetchAccounts();
+                },
+
+                // The latest accounts, or the ones with the search in their email.
+                async fetchAccounts() {
+                    const response = await fetch(`{{ root_prefix }}/admin/accounts?search=${encodeURIComponent(this.search)}`);
+                    if (!response.ok) {
+                        // Without an admin's session the admin routes answer 404: to the login page.
+                        window.location.href = '{{ root_prefix }}/';
+                        return;
+                    }
+                    this.accounts = await response.json();
+                },
+
+                async addCredits(account) {
+                    const response = await fetch(`{{ root_prefix }}/admin/accounts/${account.id}/credits`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ credits: Number(this.adding[account.id]) })
+                    });
+                    if (response.ok) {
+                        account.credits = (await response.json()).credits;
+                        this.adding[account.id] = '';
+                    } else if (response.status === 422) {
+                        alert('Add 1 credit or more.');
+                    } else {
+                        // The account is gone, or the admin's session ended: the list tells which.
+                        await this.fetchAccounts();
+                    }
+                }
+            };
+        }
+    </script>
+</body>
+</html>

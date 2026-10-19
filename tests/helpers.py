@@ -15,6 +15,10 @@ import jwt
 # PyJWT warns about HS256 keys shorter than 32 bytes.
 SECRET = "test-secret-not-for-production-use"
 
+# The tests' admin: the email in the server's ADMINS, of the user with this Google ID.
+ADMIN = "admin"
+ADMIN_EMAIL = f"{ADMIN}@example.com"
+
 
 def session_cookie(google_id, expires_in=datetime.timedelta(hours=1), key=SECRET, version=None):
     """

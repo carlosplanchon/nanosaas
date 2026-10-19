@@ -3,6 +3,7 @@ Fixtures: PostgreSQL and Redis in Docker (with testcontainers), and the API
 and a TaskIQ worker running as separate processes, like in production.
 """
 import asyncio
+import json
 import os
 import signal
 import socket
@@ -20,7 +21,7 @@ from testcontainers.community.postgres import PostgresContainer
 from testcontainers.core.container import DockerContainer
 from testcontainers.core.wait_strategies import LogMessageWaitStrategy
 
-from tests.helpers import SECRET, client_for, create_account
+from tests.helpers import ADMIN_EMAIL, SECRET, client_for, create_account
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -65,15 +66,18 @@ def services():
         )
 
 
-def write_config(path, services, port, root_path="", broker=None, db_name=None, initial_credits=None, **taskiq):
+def write_config(
+    path, services, port, root_path="", broker=None, db_name=None, initial_credits=None, admins=None, **taskiq
+):
     """taskiq: more settings for the [taskiq] section, like time_limit=3."""
     broker = broker or services.redis_url
-    credits = "" if initial_credits is None else f"INITIAL_CREDITS = {initial_credits}\n"
+    app = "" if initial_credits is None else f"INITIAL_CREDITS = {initial_credits}\n"
+    app += "" if admins is None else f"ADMINS = {json.dumps(admins)}\n"
     settings = "".join(f"{key} = {value}\n" for key, value in taskiq.items())
     path.write_text(f"""\
 [app]
 ROOT_PATH = "{root_path}"
-{credits}
+{app}
 [api]
 JWT_SIGNING_SECRET_KEY = "{SECRET}"
 GOOGLE_CLIENT_ID = "test-client-id"
@@ -166,8 +170,8 @@ def run_server(tmp_path_factory, services, name, **config):
 
 @pytest.fixture(scope="session")
 def server(tmp_path_factory, services):
-    """The API. It applies the migrations when it starts."""
-    process, server = run_server(tmp_path_factory, services, "server")
+    """The API, with the tests' admin. It applies the migrations when it starts."""
+    process, server = run_server(tmp_path_factory, services, "server", admins=[ADMIN_EMAIL])
     yield server
     process.stop()
 

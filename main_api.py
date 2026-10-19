@@ -40,13 +40,14 @@ from tortoise import Tortoise
 from tortoise.contrib.fastapi import RegisterTortoise, tortoise_exception_handlers
 from tortoise.exceptions import DoesNotExist
 from tortoise.expressions import F, Q
+from tortoise.functions import Count
 from tortoise.migrations.api import migrate
 from tortoise.migrations.recorder import MigrationRecorder
 from tortoise.transactions import in_transaction
 
 from fastapi.staticfiles import StaticFiles
 
-from pydantic import BaseModel, ConfigDict, create_model
+from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from taskiq import AsyncTaskiqDecoratedTask
 from taskiq_redis.exceptions import ResultIsMissingError
@@ -81,6 +82,10 @@ else:
 # The credits of a new account. Any Google account can log in: with 0,
 # users start tasks only once you give them credits (scripts/add_credits.py).
 INITIAL_CREDITS: int = CONFIG["app"].get("INITIAL_CREDITS", 25)
+
+# The emails of the users who can open the admin page, /admin. Google only
+# logs in users with their email verified (fastapi-sso checks it).
+ADMINS: set[str] = {email.lower() for email in CONFIG["app"].get("ADMINS", [])}
 
 
 @asynccontextmanager
@@ -215,6 +220,26 @@ async def get_page_user(
 @app.exception_handler(LoginRequired)
 async def redirect_to_login(request: Request, exc: LoginRequired):
     return RedirectResponse(url=f"{root_prefix}/")
+
+
+def is_admin(user: OpenID) -> bool:
+    return (user.email or "").lower() in ADMINS
+
+
+async def get_admin(
+    cookie: str | None = Security(APIKeyCookie(name="token", auto_error=False))
+        ) -> OpenID:
+    """
+    The logged user, if one of ADMINS. For anyone else, with a session or
+    without one, the admin routes answer 404, as if they didn't exist.
+    """
+    try:
+        user = await get_logged_user(cookie) if cookie is not None else None
+    except HTTPException:
+        user = None
+    if user is None or not is_admin(user):
+        raise HTTPException(status_code=404, detail="Not Found")
+    return user
 
 
 # The API key goes in the X-API-Key header. The api_key query parameter
@@ -445,7 +470,9 @@ async def serve_page(
         ):
     return templates.TemplateResponse(
         request, "user_panel.html", {
-            "root_prefix": root_prefix
+            "root_prefix": root_prefix,
+            # Admins get a button to the admin page.
+            "is_admin": is_admin(user)
         }
     )
 
@@ -853,6 +880,65 @@ async def get_task_details_json(
             status_code=500,
             detail="Error retrieving task details"
         )
+
+
+###########################
+#                         #
+#      --- ADMIN ---      #
+#                         #
+###########################
+# How many accounts the admin page shows, the latest first.
+ADMIN_ACCOUNTS_LIMIT = 50
+
+
+class CreditsIn(BaseModel):
+    credits: int = Field(ge=1)
+
+
+# Out of /docs, which anyone can read: for anyone but ADMINS, they don't exist.
+@app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
+async def admin_page(request: Request, admin: OpenID = Depends(get_admin)):
+    """The admin page: the accounts, with their credits, to give them more."""
+    return templates.TemplateResponse(request, "admin.html", {"root_prefix": root_prefix})
+
+
+@app.get("/admin/accounts", include_in_schema=False)
+async def admin_accounts(search: str = "", admin: OpenID = Depends(get_admin)):
+    """
+    The latest accounts, or the ones with search in their email, with
+    their credits and how many of their tasks are pending.
+    """
+    query = Account.all().order_by("-created_at").limit(ADMIN_ACCOUNTS_LIMIT)
+    if search:
+        query = query.filter(email__icontains=search)
+    accounts = await query
+    pending = dict(await TaskHistory.filter(
+        user_id__in=[account.id for account in accounts], status="PENDING"
+    ).annotate(count=Count("id")).group_by("user_id").values_list("user_id", "count"))
+    return [
+        {
+            "id": account.id,
+            "email": account.email,
+            "display_name": account.display_name,
+            "credits": account.credits,
+            "pending_tasks": pending.get(account.id, 0),
+            "created_at": account.created_at,
+        }
+        for account in accounts
+    ]
+
+
+@app.post("/admin/accounts/{account_id}/credits", include_in_schema=False)
+async def admin_add_credits(account_id: int, body: CreditsIn, admin: OpenID = Depends(get_admin)):
+    """
+    Add credits to an account in a single UPDATE, like scripts/add_credits.py,
+    so it can't undo a credit that a task reserves meanwhile.
+    """
+    if not await Account.filter(id=account_id).update(credits=F("credits") + body.credits):
+        raise HTTPException(status_code=404, detail="Account not found")
+    account = await Account.get(id=account_id)
+    logger.info("%s gave %d credits to %s", admin.email, body.credits, account.email)
+    return {"credits": account.credits}
 
 
 ##############################

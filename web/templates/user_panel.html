@@ -18,6 +18,13 @@
         <div class="flex justify-between items-center mb-8">
             <h1 class="text-3xl font-bold text-gray-700">User Panel</h1>
             <div class="flex gap-4">
+                {% if is_admin %}
+                <a href="{{ root_prefix }}/admin">
+                    <button class="bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded-md">
+                        Admin
+                    </button>
+                </a>
+                {% endif %}
                 <a href="{{ root_prefix }}/user/api_key_page">
                     <button class="bg-green-500 hover:bg-green-600 text-white font-semibold py-2 px-4 rounded-md">
                         API Key Management

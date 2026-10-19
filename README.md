@@ -125,7 +125,7 @@ To serve the app on your domain, run it with [Caddy](https://caddyserver.com/), 
 
 Without `DOMAIN`, Caddy serves `https://localhost`, with a certificate of its own that browsers warn about: that way you can try HTTPS on your machine.
 
-Any Google account can log in, and each new account gets `INITIAL_CREDITS` credits, so on a public server anyone can use them, even with several accounts. To choose who runs tasks, set `INITIAL_CREDITS = 0` in `config.toml` and give credits with `scripts/add_credits.py` (see Usage), once the user has logged in.
+Any Google account can log in, and each new account gets `INITIAL_CREDITS` credits, so on a public server anyone can use them, even with several accounts. To choose who runs tasks, set `INITIAL_CREDITS = 0` in `config.toml` and give credits from the admin page or with `scripts/add_credits.py` (see Usage), once the user has logged in.
 
 ---
 
@@ -158,6 +158,8 @@ Any Google account can log in, and each new account gets `INITIAL_CREDITS` credi
     docker compose exec api python scripts/add_credits.py user@example.com 25
     ```
    Without Docker, run `python scripts/add_credits.py user@example.com 25` from the repository root. To look into the database itself, `docker compose exec postgres psql -U nanosaas` opens a shell in it.
+
+   You can also add credits from the admin page, `/admin`, after putting your email in `ADMINS`, in `config.toml`: the user panel then shows you a button to it. It lists the latest accounts, which you can search by email, with their credits and pending tasks. For any other user, it doesn't exist.
 
    A task that waits in the queue longer than `queue_timeout` seconds is dropped, failing as `TaskExpired`, and one that runs longer than `time_limit` seconds is stopped, failing as `TimeoutError` (10 minutes each by default, set in `config.toml`): either way its credit comes back.
 
@@ -249,7 +251,7 @@ GitHub Actions runs them with Python 3.11 and 3.15 on every push to `main` and o
 ## Known Limitations
 
 - A task whose worker dies in the middle of it runs again from the start, so a task that changes things outside NanoSaaS, like sending an email, may do it twice, unless the service it calls takes its `task_id` as an idempotency key.
-- There are no payments: users get `INITIAL_CREDITS` the first time they log in, and more only when you add them with `scripts/add_credits.py`.
+- There are no payments: users get `INITIAL_CREDITS` the first time they log in, and more only when you add them, from the admin page or with `scripts/add_credits.py`.
 
 ---
 
