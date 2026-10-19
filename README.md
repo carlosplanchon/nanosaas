@@ -242,7 +242,7 @@ pytest
 
 They take a few minutes: the example task waits 5 seconds, and some tests wait for tasks to time out.
 
-GitHub Actions runs them with Python 3.11 and 3.15 on every push to `main` and on every pull request (`.github/workflows/tests.yml`). It also starts the app with Docker Compose and runs two tasks through the API.
+GitHub Actions runs them with Python 3.11 and 3.15 on every push to `main` and on every pull request (`.github/workflows/tests.yml`). It also starts the app with Docker Compose and runs two tasks through the API. Every week, Dependabot opens pull requests with the new versions of the Python packages and of the workflow's actions, which are pinned (`.github/dependabot.yml`), and the tests run on them.
 
 ---
 

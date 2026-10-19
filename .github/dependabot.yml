@@ -1,0 +1,25 @@
+# Weekly pull requests with the new versions of the dependencies, which are
+# pinned to exact ones: the Python packages of requirements*.txt, and the
+# actions of the workflows. The tests run on each pull request.
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      # Their minor and patch versions in one pull request, since some packages
+      # move together, like FastAPI, Starlette and Pydantic. Each major version
+      # gets a pull request of its own.
+      python:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
