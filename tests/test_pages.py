@@ -41,14 +41,22 @@ async def test_pages_have_a_favicon_and_the_built_css(user, path):
         assert (r.status_code, r.headers["content-type"].split(";")[0]) == (200, content_type), rel
 
 
-def test_the_built_css_has_every_class_of_the_templates():
+def test_the_built_css_has_every_class_of_the_templates_and_scripts():
     css = (REPO / "web" / "static" / "tailwind.css").read_text()
-    for template in (REPO / "web" / "templates").glob("*.html"):
-        for classes in re.findall(r'class="([^"]*)"', template.read_text()):
+    # The scripts write class attributes too, like json.js for the colors of the results.
+    files = [*(REPO / "web" / "templates").glob("*.html"), *(REPO / "web" / "static").glob("*.js")]
+    for file in files:
+        for classes in re.findall(r'class="([^"]*)"', file.read_text()):
             for name in classes.split():
                 # Tailwind escapes these characters in its selectors.
                 selector = "." + re.sub(r"([:/.\[\]])", r"\\\1", name)
-                assert selector in css, f"{name} in {template.name}: run scripts/build_css.py"
+                assert selector in css, f"{name} in {file.name}: run scripts/build_css.py"
+
+
+def test_the_templates_static_files_exist():
+    for template in (REPO / "web" / "templates").glob("*.html"):
+        for path in re.findall(r'"\{\{ root_prefix \}\}/web/static/([^"]+)"', template.read_text()):
+            assert (REPO / "web" / "static" / path).is_file(), f"{path} in {template.name}"
 
 
 def test_scripts_and_styles_from_other_sites_have_an_integrity_hash():

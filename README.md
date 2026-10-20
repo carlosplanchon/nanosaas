@@ -23,7 +23,7 @@ I built the first version in three days, with almost no prior knowledge of web d
 ## Tech Stack
 
 - **Backend**: FastAPI, TaskIQ, Redis
-- **Frontend**: Alpine.js, Tailwind CSS, Prism.js (to color the results' JSON)
+- **Frontend**: Alpine.js, Tailwind CSS
 - **Database**: PostgreSQL, Tortoise ORM (and its migrations)
 - **Authentication**: Google SSO
 
@@ -206,7 +206,7 @@ Any Google account can log in, and each new account gets `INITIAL_CREDITS` credi
    Return plain Python values (dicts, lists, numbers or strings): TaskIQ turns them into JSON. Don't return `json.dumps(...)`: the result would be saved as a string, and the API would show it with escaped quotes.
 7. Customize the pages in `web/templates/`. Put images, icons and other static files in `web/static/`: they are served at `/web/static/`. In the templates, start their URLs with `{{ root_prefix }}` so they also work with a `ROOT_PATH`, as the logo in `login.html` does.
 
-   The pages load Tailwind from `web/static/tailwind.css`, which only has the classes the templates use. After changing them, rebuild it with `python scripts/build_css.py`: it uses Tailwind's standalone CLI, which doesn't need Node.js and is downloaded the first time. The tests fail if a class in the templates is missing from it.
+   The pages load Tailwind from `web/static/tailwind.css`, which only has the classes used in the templates and in the scripts of `web/static/`, like the colors of the results' JSON in `json.js`. After changing them, rebuild it with `python scripts/build_css.py`: it uses Tailwind's standalone CLI, which doesn't need Node.js and is downloaded the first time. The tests fail if one of their classes is missing from it.
 
 ---
 

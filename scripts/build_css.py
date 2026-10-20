@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Build web/static/tailwind.css with the classes used in web/templates.
-Run it after changing the templates. It uses Tailwind's standalone CLI,
-which doesn't need Node.js: the first run downloads it to ~/.cache.
+Build web/static/tailwind.css with the classes used in web/templates and in
+the scripts of web/static. Run it after changing them. It uses Tailwind's
+standalone CLI, which doesn't need Node.js: the first run downloads it to
+~/.cache.
 """
 import hashlib
 import os
@@ -47,7 +48,7 @@ def tailwind_cli() -> Path:
 
 if __name__ == "__main__":
     subprocess.run(
-        [tailwind_cli(), "--content", "web/templates/**/*.html", "-o", "web/static/tailwind.css", "--minify"],
+        [tailwind_cli(), "--content", "web/templates/**/*.html,web/static/**/*.js", "-o", "web/static/tailwind.css", "--minify"],
         cwd=REPO,
         check=True,
         # Without it, the CLI suggests updating its browser list, which it can't do.
