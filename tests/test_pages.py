@@ -1,5 +1,7 @@
 """Pages, static files, and the redirect to the login page without a valid session."""
 import datetime
+import hashlib
+import os
 import re
 from pathlib import Path
 
@@ -39,6 +41,8 @@ async def test_pages_have_a_favicon_and_the_built_css(user, path):
         href = re.search(rf'<link rel="{rel}"[^>]* href="(/[^"]+)"', page.text).group(1)
         r = await user.get(href)
         assert (r.status_code, r.headers["content-type"].split(";")[0]) == (200, content_type), rel
+        # With the hash of what it serves: the URL changes with the file (see static_url()).
+        assert href.endswith(f"?v={hashlib.sha256(r.content).hexdigest()[:12]}"), href
 
 
 def test_the_built_css_has_every_class_of_the_templates_and_scripts():
@@ -53,10 +57,26 @@ def test_the_built_css_has_every_class_of_the_templates_and_scripts():
                 assert selector in css, f"{name} in {file.name}: run scripts/build_css.py"
 
 
-def test_the_templates_static_files_exist():
+def test_the_templates_get_the_urls_of_static_files_that_exist_from_static_url():
     for template in (REPO / "web" / "templates").glob("*.html"):
-        for path in re.findall(r'"\{\{ root_prefix \}\}/web/static/([^"]+)"', template.read_text()):
-            assert (REPO / "web" / "static" / path).is_file(), f"{path} in {template.name}"
+        text = template.read_text()
+        # Not by hand: a URL without the file's hash outlives a deploy that changes the file.
+        assert "/web/static/" not in text, template.name
+        for name in re.findall(r"\{\{ static_url\('([^']+)'\) \}\}", text):
+            assert (REPO / "web" / "static" / name).is_file(), f"{name} in {template.name}"
+
+
+def test_the_url_of_a_static_file_changes_with_it(app_module, tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "STATIC_DIRECTORY", tmp_path)
+    script = tmp_path / "app.js"
+    script.write_text("one")
+    assert app_module.static_url("app.js") == f"/web/static/app.js?v={hashlib.sha256(b'one').hexdigest()[:12]}"
+
+    # After a deploy, or an edit while the server runs: other contents, modified later.
+    script.write_text("two")
+    modified = script.stat().st_mtime_ns + 1_000_000_000
+    os.utime(script, ns=(modified, modified))
+    assert app_module.static_url("app.js") == f"/web/static/app.js?v={hashlib.sha256(b'two').hexdigest()[:12]}"
 
 
 def test_the_pages_load_their_scripts_and_styles_from_this_server():
@@ -131,7 +151,7 @@ async def test_pages_and_links_with_a_root_path(prefixed_server):
         assert (r.status_code, r.headers.get("location")) == (307, "/nanosaas/")
         r = await client.get("/nanosaas/")
         assert 'href="/nanosaas/auth/login"' in r.text
-        assert 'href="/nanosaas/web/static/nanosaas_logo.svg"' in r.text
-        assert 'href="/nanosaas/web/static/tailwind.css"' in r.text
-        assert '<img src="/nanosaas/web/static/nanosaas_logo.svg"' in r.text
+        assert 'href="/nanosaas/web/static/nanosaas_logo.svg?v=' in r.text
+        assert 'href="/nanosaas/web/static/tailwind.css?v=' in r.text
+        assert '<img src="/nanosaas/web/static/nanosaas_logo.svg?v=' in r.text
         assert (await client.get("/nanosaas/web/static/nanosaas_logo.svg")).status_code == 200

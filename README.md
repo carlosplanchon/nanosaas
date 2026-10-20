@@ -206,11 +206,11 @@ Any Google account can log in, and each new account gets `INITIAL_CREDITS` credi
     ```
 
    Return plain Python values (dicts, lists, numbers or strings): TaskIQ turns them into JSON. Don't return `json.dumps(...)`: the result would be saved as a string, and the API would show it with escaped quotes.
-7. Customize the pages in `web/templates/`. Put images, icons and other static files in `web/static/`: they are served at `/web/static/`. In the templates, start their URLs with `{{ root_prefix }}` so they also work with a `ROOT_PATH`, as the logo in `login.html` does.
+7. Customize the pages in `web/templates/`. Put images, icons and other static files in `web/static/`: they are served at `/web/static/`. In the templates, get their URLs with `static_url()`, as the logo in `login.html` does: `{{ static_url('nanosaas_logo.svg') }}`. It adds the `ROOT_PATH`, and a hash of the file, so after a deploy that changes it, browsers get the new one instead of reusing the copy they kept.
 
    The pages load Tailwind from `web/static/tailwind.css`, which only has the classes used in the templates and in the scripts of `web/static/`, like the colors of the results' JSON in `json.js`. After changing them, rebuild it with `python scripts/build_css.py`: it uses Tailwind's standalone CLI, which doesn't need Node.js and is downloaded the first time. The tests fail if one of their classes is missing from it.
 
-   Alpine.js is in `web/static/` too, next to its license, so the pages load nothing from other sites: they work without them, and no CDN sees who visits them. To update it, save the new version's `dist/cdn.min.js` there as `alpine-<version>.min.js`, for example with `curl -o web/static/alpine-X.Y.Z.min.js https://cdn.jsdelivr.net/npm/alpinejs@X.Y.Z/dist/cdn.min.js`, delete the old file, and change the version in the templates that load it. With the version in the file's name, browsers don't keep using the old one from their cache.
+   Alpine.js is in `web/static/` too, next to its license, so the pages load nothing from other sites: they work without them, and no CDN sees who visits them. To update it, save the new version's `dist/cdn.min.js` there as `alpine-<version>.min.js`, for example with `curl -o web/static/alpine-X.Y.Z.min.js https://cdn.jsdelivr.net/npm/alpinejs@X.Y.Z/dist/cdn.min.js`, delete the old file, and change the version in the templates that load it.
 
 ---
 

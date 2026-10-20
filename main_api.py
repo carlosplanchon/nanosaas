@@ -5,6 +5,8 @@ import datetime
 
 import functools
 
+import hashlib
+
 import inspect
 
 import logging
@@ -16,6 +18,8 @@ import typing
 import uuid
 
 from contextlib import asynccontextmanager
+
+from pathlib import Path
 
 from fastapi import FastAPI, Depends, Header, HTTPException, Security, Request
 
@@ -111,11 +115,33 @@ app = FastAPI(
 
 
 # Mount static files directory
+STATIC_DIRECTORY = Path("web/static")
 app.mount("/web/static", StaticFiles(
-        directory="web/static"
+        directory=STATIC_DIRECTORY
     ),
     name="static"
 )
+
+
+@functools.cache
+def content_version(path: Path, modified: int) -> str:
+    """The start of the file's SHA-256, once for each modification time it has."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+
+
+def static_url(name: str) -> str:
+    """
+    The URL of a file of web/static for the templates, with ?v= and a hash
+    of its contents. The files are served without Cache-Control, so browsers
+    reuse them for a while without asking, guessing from how old they are.
+    With the hash, a file's URL changes with it: after a deploy that changes
+    it, browsers get the new one.
+    """
+    path = STATIC_DIRECTORY / name
+    return f"{root_prefix}/web/static/{name}?v={content_version(path, path.stat().st_mtime_ns)}"
+
+
+templates.env.globals["static_url"] = static_url
 
 
 # used to sign JWTs, make sure it is really secret.
