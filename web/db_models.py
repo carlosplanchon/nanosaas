@@ -71,6 +71,51 @@ class Account(Model):
             credits=F("credits") + 1
         )
 
+    @classmethod
+    async def delete_with_tasks(cls, google_id: str) -> bool:
+        """
+        Delete an account and its tasks, keeping only the hash of its
+        Google ID (see DeletedAccount). Its sessions and its API key stop
+        working with it.
+
+        The tasks go first and the account last, the order in which
+        TaskHistory.finish() and give_up() lock them: a task that ends
+        meanwhile makes this wait, instead of a deadlock. A worker that
+        takes one of its queued tasks later skips it (see TaskHistory.start()).
+        Returns False if there was no such account.
+        """
+        async with in_transaction():
+            account = await cls.get_or_none(google_id=google_id)
+            if account is None:
+                return False
+            await TaskHistory.filter(user_id=account.id).delete()
+            await DeletedAccount.get_or_create(google_id_hash=DeletedAccount.hash_google_id(google_id))
+            # The foreign key deletes, on cascade, the tasks created meanwhile.
+            await cls.filter(id=account.id).delete()
+        return True
+
+
+class DeletedAccount(Model):
+    """
+    What's kept of a deleted account: the hash of its Google ID.
+
+    Logging in with it again starts an account without INITIAL_CREDITS:
+    otherwise, deleting the account would be a way to get them again.
+    """
+    id = fields.IntField(primary_key=True)
+    google_id_hash = fields.CharField(max_length=64, unique=True)
+    # When an account with this Google ID was deleted for the first time.
+    deleted_at = fields.DatetimeField(auto_now_add=True)
+
+    @staticmethod
+    def hash_google_id(google_id: str) -> str:
+        return hashlib.sha256(google_id.encode()).hexdigest()
+
+    @classmethod
+    async def exists_for(cls, google_id: str) -> bool:
+        """Whether an account with this Google ID was deleted."""
+        return await cls.filter(google_id_hash=cls.hash_google_id(google_id)).exists()
+
 
 class TaskError(Exception):
     """
@@ -123,8 +168,8 @@ class TaskHistory(Model):
         starts: the first one, or after release(), the first one queued
         again.
         Returns when it started, which tells this run from the next ones
-        (see renew()), or None if the task has no pending row or already
-        started.
+        (see renew()), or None if the task has no pending row, like one
+        deleted with its account, or already started.
         """
         started_at = timezone.now()
         updated = await cls.filter(

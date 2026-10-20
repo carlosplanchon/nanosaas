@@ -142,6 +142,8 @@ Any Google account can log in, and each new account gets `INITIAL_CREDITS` credi
 
    It shows the latest 50 tasks (`TASK_HISTORY_LIMIT` in `main_api.py`). It checks them every 5 seconds while one is pending, every 30 seconds otherwise, and not while its tab is hidden.
 
+   At the bottom of the panel, users can delete their account, with its tasks and its API key: its sessions end on every device. All that's kept is a hash of its Google ID, so that logging in with it again starts an account without `INITIAL_CREDITS`: otherwise, deleting the account would be a way to get them again. The results of its tasks may stay in Redis for up to a day, until the result backend forgets them.
+
 4. Use the API with the key from the *API Key Management* page, sent in the `X-API-Key` header. A task starts with a POST to `/api/task/<name>`, with its parameters in a JSON object:
     ```bash
     curl -H "X-API-Key: your_api_key" http://127.0.0.1:8000/api/user_credits

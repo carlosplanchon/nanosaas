@@ -117,6 +117,12 @@
                 </table>
             </div>
         </div>
+
+        <!-- Deleting the account: at the end, apart from the other buttons -->
+        <form method="post" action="{{ root_prefix }}/user/delete_account" class="my-10 text-center"
+              onsubmit="return confirm('Delete your account, with its tasks, its credits and its API key? This cannot be undone.')">
+            <button class="text-sm text-red-600 hover:underline">Delete Account</button>
+        </form>
     </div>
 
     <script>

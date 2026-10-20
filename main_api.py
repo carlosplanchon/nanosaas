@@ -56,7 +56,7 @@ from taskiq_task import broker
 from taskiq_task import ATTEMPTS, LEASE, QUEUE_TIMEOUT, TIME_LIMIT
 from taskiq_task import LOG_FORMAT, TaskLost, queue_task
 
-from web.db_models import Account, TaskHistory
+from web.db_models import Account, DeletedAccount, TaskHistory
 
 from shared import CONFIG
 from shared import TORTOISE_ORM
@@ -184,11 +184,18 @@ async def get_logged_user(
             detail="Invalid authentication credentials"
         ) from error
 
-    # A session from before the account's last logout doesn't work anymore.
-    # The ones from before session versions have none: they count as the first.
+    # A session from before the account's last logout doesn't work anymore,
+    # nor one of a deleted account, even after its Google account logs in
+    # again: that's another account, whose version starts over. The sessions
+    # from before these claims have none: they count as the first version
+    # of the current account.
     account = await Account.get_or_none(google_id=user.id)
-    if account is None or claims.get("ver", 0) != account.session_version:
-        logger.info("Session of %s ended by a logout", user.id)
+    if (
+        account is None
+        or claims.get("ver", 0) != account.session_version
+        or claims.get("acc", account.id) != account.id
+    ):
+        logger.info("Session of %s ended by a logout, or by deleting its account", user.id)
         raise HTTPException(
             status_code=401,
             detail="Invalid authentication credentials"
@@ -281,6 +288,16 @@ async def thankyou(request: Request):
     return response
 
 
+@app.get("/account_deleted", response_class=HTMLResponse)
+async def account_deleted(request: Request):
+    """The page after deleting the account."""
+    return templates.TemplateResponse(
+        request, "account_deleted.html", {
+            "root_prefix": root_prefix
+        }
+    )
+
+
 @app.get("/auth/login")
 async def login():
     """Redirect the user to the Google login page."""
@@ -309,6 +326,22 @@ async def logout(
     return response
 
 
+# POST, like logout: with GET, a link from another site could delete the
+# account, since the SameSite=lax cookie goes with GET navigations.
+@app.post("/user/delete_account", response_class=HTMLResponse)
+async def delete_account(user: OpenID = Depends(get_logged_user)):
+    """
+    Delete the user's account, with its tasks, and forget the cookie. Its
+    sessions, on every device, and its API key stop working.
+    """
+    if await Account.delete_with_tasks(user.id):
+        logger.info("Account of %s deleted by its user", user.id)
+
+    response = RedirectResponse(url=f"{root_prefix}/account_deleted", status_code=303)
+    response.delete_cookie(key="token", **SESSION_COOKIE_FLAGS)
+    return response
+
+
 @app.get("/auth/callback")
 async def login_callback(request: Request):
     """Process login and redirect the user to the protected endpoint."""
@@ -320,7 +353,8 @@ async def login_callback(request: Request):
                 detail="Authentication failed"
             )
 
-    # Check if account exists, if not, create it
+    # Check if account exists, if not, create it: without credits if the
+    # Google account had one that was deleted (see DeletedAccount).
     account, created = await Account.get_or_create(
         google_id=openid.id,
         defaults={
@@ -330,7 +364,7 @@ async def login_callback(request: Request):
             "display_name": openid.display_name,
             "picture": openid.picture,
             "provider": openid.provider,
-            "credits": INITIAL_CREDITS,
+            "credits": 0 if await DeletedAccount.exists_for(openid.id) else INITIAL_CREDITS,
         },
     )
 
@@ -344,7 +378,9 @@ async def login_callback(request: Request):
             "exp": expiration,
             "sub": openid.id,
             # The account's sessions from before its next logout.
-            "ver": account.session_version
+            "ver": account.session_version,
+            # The account's: if it's deleted, the next one of the same Google account is another.
+            "acc": account.id
         },
         key=JWT_SIGNING_SECRET_KEY,
         algorithm="HS256"

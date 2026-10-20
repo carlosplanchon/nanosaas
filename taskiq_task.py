@@ -205,7 +205,10 @@ class Receiver(BaseReceiver):
             logger.error("Can't start task %s, so it's skipped: %s", message.task_id, e)
             return self.skipped(message)
         if started_at is None:
-            logger.info("Task %s was started already, or given up by the API: skipped.", message.task_id)
+            logger.info(
+                "Task %s was started already, given up by the API, or deleted with its account: skipped.",
+                message.task_id,
+            )
             return self.skipped(message)
 
         if time.time() > float(message.labels.get("queue_deadline", "inf")):

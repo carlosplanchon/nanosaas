@@ -138,6 +138,11 @@ async def wait_until_done(client, task_id, timeout=60):
         await asyncio.sleep(0.5)
 
 
+def skipped(task_id):
+    """The worker's log line for a copy of a task that it takes, but doesn't run."""
+    return f"Task {task_id} was started already, given up by the API, or deleted with its account: skipped."
+
+
 async def wait_for_log(log, text, timeout=30):
     """Wait for a text to show up in a process's log."""
     deadline = time.monotonic() + timeout

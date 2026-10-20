@@ -13,7 +13,7 @@ import uuid
 
 import pytest
 
-from tests.helpers import client_for, create_account, wait_for_row
+from tests.helpers import client_for, create_account, skipped, wait_for_row
 
 pytestmark = pytest.mark.anyio
 
@@ -86,7 +86,7 @@ def lossy_redis(services):
 
 
 def skips(worker, task_id):
-    return worker.log.read_text().count(f"Task {task_id} was started already, or given up by the API: skipped.")
+    return worker.log.read_text().count(skipped(task_id))
 
 
 def runs(worker, task_id):
