@@ -9,7 +9,7 @@
     <!-- Include the script that colors the result's JSON -->
     <script src="{{ root_prefix }}/web/static/json.js"></script>
     <!-- Include Alpine.js -->
-    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.17.4/dist/cdn.min.js" integrity="sha384-5/joNqFnRyVWzXp99bHot6RHG+EksGp+USSgZwPar7T9SD9PKKER37n/8bXBAZGd" crossorigin="anonymous" defer></script>
+    <script src="{{ root_prefix }}/web/static/alpine-3.17.4.min.js" defer></script>
 </head>
 <body class="bg-gray-100 font-sans leading-normal tracking-normal">
     <div class="container mx-auto mt-10" x-data="taskDetails('{{ task_id }}')" x-init="fetchTaskDetails()">

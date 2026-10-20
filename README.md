@@ -210,6 +210,8 @@ Any Google account can log in, and each new account gets `INITIAL_CREDITS` credi
 
    The pages load Tailwind from `web/static/tailwind.css`, which only has the classes used in the templates and in the scripts of `web/static/`, like the colors of the results' JSON in `json.js`. After changing them, rebuild it with `python scripts/build_css.py`: it uses Tailwind's standalone CLI, which doesn't need Node.js and is downloaded the first time. The tests fail if one of their classes is missing from it.
 
+   Alpine.js is in `web/static/` too, next to its license, so the pages load nothing from other sites: they work without them, and no CDN sees who visits them. To update it, save the new version's `dist/cdn.min.js` there as `alpine-<version>.min.js`, for example with `curl -o web/static/alpine-X.Y.Z.min.js https://cdn.jsdelivr.net/npm/alpinejs@X.Y.Z/dist/cdn.min.js`, delete the old file, and change the version in the templates that load it. With the version in the file's name, browsers don't keep using the old one from their cache.
+
 ---
 
 ## Development Notes
@@ -246,7 +248,7 @@ pytest
 
 They take a few minutes: the example task waits 5 seconds, and some tests wait for tasks to time out.
 
-GitHub Actions runs them with Python 3.11 and 3.15 on every push to `main` and on every pull request (`.github/workflows/tests.yml`). It also starts the app with Docker Compose and runs two tasks through the API. Every week, Dependabot opens pull requests with the new versions of the Python packages and of the workflow's actions, which are pinned (`.github/dependabot.yml`), and the tests run on them.
+GitHub Actions runs them with Python 3.11 and 3.15 on every push to `main` and on every pull request (`.github/workflows/tests.yml`). It also starts the app with Docker Compose and runs two tasks through the API. Every week, Dependabot opens pull requests with the new versions of the Python packages and of the workflow's actions, which are pinned (`.github/dependabot.yml`), and the tests run on them. It doesn't watch Alpine.js, in `web/static/`: update it by hand, as step 7 of Usage says.
 
 ---
 

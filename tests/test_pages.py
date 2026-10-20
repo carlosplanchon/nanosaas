@@ -59,10 +59,11 @@ def test_the_templates_static_files_exist():
             assert (REPO / "web" / "static" / path).is_file(), f"{path} in {template.name}"
 
 
-def test_scripts_and_styles_from_other_sites_have_an_integrity_hash():
+def test_the_pages_load_their_scripts_and_styles_from_this_server():
+    # Not from a CDN: the pages work without other sites, which don't see who visits them.
     for template in (REPO / "web" / "templates").glob("*.html"):
-        for tag in re.findall(r'<(?:script|link)\b[^>]*"https://[^>]*>', template.read_text()):
-            assert 'integrity="sha384-' in tag and 'crossorigin="anonymous"' in tag, f"{template.name}: {tag}"
+        for tag in re.findall(r"<(?:script|link)\b[^>]*>", template.read_text()):
+            assert not re.search(r'(?:src|href)="(?:https?:)?//', tag), f"{template.name}: {tag}"
 
 
 async def test_credits_with_the_api_key(account, anon):
