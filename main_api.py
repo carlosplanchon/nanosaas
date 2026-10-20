@@ -1003,6 +1003,21 @@ async def admin_add_credits(account_id: int, body: CreditsIn, admin: OpenID = De
     return {"credits": account.credits}
 
 
+@app.delete("/admin/accounts/{account_id}", include_in_schema=False)
+async def admin_delete_account(account_id: int, admin: OpenID = Depends(get_admin)):
+    """
+    Delete an account, with its tasks, as its user can from the panel (see
+    Account.delete_with_tasks()): for a user who asks for it without being
+    able to log in, or an account that abuses the service.
+    """
+    account = await Account.get_or_none(id=account_id)
+    if account is None or not await Account.delete_with_tasks(account.google_id):
+        raise HTTPException(status_code=404, detail="Account not found")
+    # Its ID, and not its email: the account was deleted to forget it.
+    logger.info("%s deleted account %d", admin.email, account_id)
+    return {"deleted": account_id}
+
+
 ##############################
 #                            #
 #      --- DATABASE ---      #

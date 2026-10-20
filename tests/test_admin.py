@@ -1,8 +1,9 @@
 """
-The admin page: for the emails in ADMINS, to see the accounts and give them
-credits. For anyone else, its routes don't exist.
+The admin page: for the emails in ADMINS, to see the accounts, give them
+credits and delete them. For anyone else, its routes don't exist.
 """
 import asyncio
+import hashlib
 
 import pytest
 
@@ -38,6 +39,7 @@ async def test_for_anyone_else_the_admin_routes_dont_exist(account, user, anon):
             ("POST", f"/admin/accounts/{account.id}/credits", {"json": {"credits": 5}}),
             # Not even a 422 for a wrong body.
             ("POST", f"/admin/accounts/{account.id}/credits", {"json": {"credits": 0}}),
+            ("DELETE", f"/admin/accounts/{account.id}", {}),
         ]:
             r = await client.request(method, path, **payload)
             assert (r.status_code, r.json()) == NOT_FOUND, path
@@ -68,6 +70,26 @@ async def test_an_admin_finds_an_account_and_gives_it_credits(admin, db, account
     r = await admin.post("/admin/accounts/0/credits", json={"credits": 1})
     assert (r.status_code, r.json()) == (404, {"detail": "Account not found"})
     assert (await admin.get("/admin/accounts", params={"search": "no-such-email"})).json() == []
+
+
+async def test_an_admin_deletes_an_account_with_its_tasks(admin, server, db, account, anon):
+    task_id = await insert_task(db, account)
+
+    r = await admin.delete(f"/admin/accounts/{account.id}")
+    assert (r.status_code, r.json()) == (200, {"deleted": account.id})
+    assert await db.fetchval("SELECT count(*) FROM account WHERE id = $1", account.id) == 0
+    assert await db.fetchval("SELECT count(*) FROM taskhistory WHERE task_id = $1", task_id) == 0
+    # As when its user deletes it: the session and the API key stop working, and the hash is kept.
+    async with client_for(server, account.cookie) as user:
+        assert (await user.get("/user/credits")).status_code == 401
+    assert (await anon.get("/api/user_credits", headers={"X-API-Key": account.api_key})).status_code == 401
+    google_id_hash = hashlib.sha256(account.google_id.encode()).hexdigest()
+    assert await db.fetchval("SELECT count(*) FROM deletedaccount WHERE google_id_hash = $1", google_id_hash) == 1
+    # Who deleted which one.
+    assert f"{ADMIN_EMAIL} deleted account {account.id}" in (server.config.parent / "uvicorn.log").read_text()
+
+    r = await admin.delete(f"/admin/accounts/{account.id}")
+    assert (r.status_code, r.json()) == (404, {"detail": "Account not found"})
 
 
 async def test_credits_given_while_tasks_start_add_up(admin, account, user):

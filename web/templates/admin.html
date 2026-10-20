@@ -20,7 +20,7 @@
             </a>
         </div>
 
-        <!-- The accounts, to give them credits -->
+        <!-- The accounts, to give them credits or delete them -->
         <div x-data="accountManager()" class="bg-white p-6 rounded-lg shadow-md w-full mx-auto">
             <div class="flex flex-col md:flex-row items-center justify-center gap-4 mb-6">
                 <label class="block text-gray-700">
@@ -39,6 +39,7 @@
                             <th class="border p-2">Pending Tasks</th>
                             <th class="border p-2">Created At</th>
                             <th class="border p-2">Add Credits</th>
+                            <th class="border p-2">Delete Account</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -56,6 +57,9 @@
                                             Add
                                         </button>
                                     </div>
+                                </td>
+                                <td class="border p-2 text-center">
+                                    <button x-on:click="deleteAccount(account)" class="text-sm text-red-600 hover:underline">Delete</button>
                                 </td>
                             </tr>
                         </template>
@@ -103,6 +107,13 @@
                         // The account is gone, or the admin's session ended: the list tells which.
                         await this.fetchAccounts();
                     }
+                },
+
+                async deleteAccount(account) {
+                    if (!confirm(`Delete the account of ${account.email}, with its tasks? This cannot be undone.`)) return;
+                    await fetch(`{{ root_prefix }}/admin/accounts/${account.id}`, { method: 'DELETE' });
+                    // Deleted now or before, or the admin's session ended: the list tells which.
+                    await this.fetchAccounts();
                 }
             };
         }
