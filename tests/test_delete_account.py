@@ -18,7 +18,7 @@ from taskiq.serializers import JSONSerializer
 from taskiq_redis import RedisAsyncResultBackend
 
 from tests.helpers import (
-    client_for, cookie_attributes, create_account, insert_task, session_cookie, skipped, wait_for_log
+    client_for, cookie_attributes, create_account, insert_task, session_cookie, skipped, wait_for_lock, wait_for_log
 )
 
 pytestmark = pytest.mark.anyio
@@ -145,17 +145,6 @@ async def test_a_task_running_when_its_account_is_deleted_ends_without_errors(
     assert f"Error saving task {task_id}" not in log
     assert f"Can't renew the lease of task {task_id}" not in log
     assert "Traceback" not in log
-
-
-async def wait_for_lock(db, query, timeout=10):
-    """Wait until a query like this one waits for a lock."""
-    deadline = time.monotonic() + timeout
-    while not await db.fetchval(
-        "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE $1", f"%{query}%"
-    ):
-        if time.monotonic() > deadline:
-            raise TimeoutError(f"No query like {query!r} waits for a lock")
-        await asyncio.sleep(0.1)
 
 
 async def test_deleting_an_account_waits_for_a_task_that_is_ending(services, db, account, user):

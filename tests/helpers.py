@@ -140,7 +140,18 @@ async def wait_until_done(client, task_id, timeout=60):
 
 def skipped(task_id):
     """The worker's log line for a copy of a task that it takes, but doesn't run."""
-    return f"Task {task_id} was started already, given up by the API, or deleted with its account: skipped."
+    return f"Task {task_id} was started already, given up by the API, canceled, or deleted with its account: skipped."
+
+
+async def wait_for_lock(db, query, timeout=10):
+    """Wait until a query like this one waits for a lock, in the database."""
+    deadline = time.monotonic() + timeout
+    while not await db.fetchval(
+        "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE $1", f"%{query}%"
+    ):
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"No query like {query!r} waits for a lock")
+        await asyncio.sleep(0.1)
 
 
 async def wait_for_log(log, text, timeout=30):

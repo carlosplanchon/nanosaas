@@ -140,7 +140,7 @@ Any Google account can log in, and each new account gets `INITIAL_CREDITS` credi
 
    ![User Panel](docs/user_panel.png)
 
-   It shows the latest 50 tasks (`TASK_HISTORY_LIMIT` in `main_api.py`). It checks them every 5 seconds while one is pending, every 30 seconds otherwise, and not while its tab is hidden.
+   It shows the latest 50 tasks (`TASK_HISTORY_LIMIT` in `main_api.py`), with a *Cancel* button on the pending ones that no worker started yet. It checks them every 5 seconds while one is pending, every 30 seconds otherwise, and not while its tab is hidden.
 
    At the bottom of the panel, users can delete their account, with its tasks and its API key: its sessions end on every device. All that's kept is a hash of its Google ID, so that logging in with it again starts an account without `INITIAL_CREDITS`: otherwise, deleting the account would be a way to get them again. The results of its tasks may stay in Redis for up to a day, until the result backend forgets them.
 
@@ -149,13 +149,14 @@ Any Google account can log in, and each new account gets `INITIAL_CREDITS` credi
     curl -H "X-API-Key: your_api_key" http://127.0.0.1:8000/api/user_credits
     curl -H "X-API-Key: your_api_key" -H "Content-Type: application/json" -d '{"x": 10, "y": 4}' http://127.0.0.1:8000/api/task/divide
     curl -H "X-API-Key: your_api_key" http://127.0.0.1:8000/api/task_details/your_task_id
+    curl -X POST -H "X-API-Key: your_api_key" http://127.0.0.1:8000/api/task/cancel/your_task_id
     ```
-   Wrong parameters get a 422 error, without spending a credit. The API key also works in the `api_key` query parameter, for older clients, but avoid it: URLs end up in server and proxy logs. The interactive docs at `/docs` list every route, and under **tasks**, every task with its description and parameters, where you can also try them.
+   Wrong parameters get a 422 error, without spending a credit. A task that no worker started yet can be canceled, as the last line does: its credit comes back, and it stays in the history as `CANCELED`. One that started gets a 409 error. The API key also works in the `api_key` query parameter, for older clients, but avoid it: URLs end up in server and proxy logs. The interactive docs at `/docs` list every route, and under **tasks**, every task with its description and parameters, where you can also try them.
 
    To retry a request safely, for example after a timeout, send it with an `Idempotency-Key` header, with a value you pick for each request, like a UUID. Sent again with the same key, the request gets the task it started, without paying for another one, and if it didn't start one, it starts it then. Reusing a key for another task or other parameters gets a 422 error. The panel does the same, so a double click starts one task.
 
    The page shows the whole key only when you generate it: the database keeps just its first characters and a hash of it.
-5. Each user starts with `INITIAL_CREDITS` credits, set in `config.toml` (25 by default). A credit is reserved when a task is queued and given back if the task fails, so only successful tasks are charged. When credits run out, the user can't start more tasks until you add more, giving the email the user logs in with:
+5. Each user starts with `INITIAL_CREDITS` credits, set in `config.toml` (25 by default). A credit is reserved when a task is queued and given back if the task fails, or is canceled, so only successful tasks are charged. When credits run out, the user can't start more tasks until you add more, giving the email the user logs in with:
     ```bash
     docker compose exec api python scripts/add_credits.py user@example.com 25
     ```

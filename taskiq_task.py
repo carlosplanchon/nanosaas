@@ -206,7 +206,7 @@ class Receiver(BaseReceiver):
             return self.skipped(message)
         if started_at is None:
             logger.info(
-                "Task %s was started already, given up by the API, or deleted with its account: skipped.",
+                "Task %s was started already, given up by the API, canceled, or deleted with its account: skipped.",
                 message.task_id,
             )
             return self.skipped(message)

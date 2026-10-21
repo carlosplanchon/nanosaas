@@ -470,7 +470,9 @@ async def task_history(user: OpenID = Depends(get_logged_user)):
             "parameters": task.parameters,
             "status": task.status,
             "result": task.result,
-            "created_at": task.created_at
+            "created_at": task.created_at,
+            # Until a worker starts it, a pending task can be canceled.
+            "started": task.started_at is not None
         }
         for task in history
     ]
@@ -812,6 +814,47 @@ async def get_status(task_id: str, user: OpenID = Depends(get_logged_user)):
             status_code=500,
             detail="Error retrieving task status"
         )
+
+
+async def cancel_task(account: Account, task_id: str) -> TaskOut:
+    """
+    Cancel the account's task, if no worker started it, giving its credit
+    back (see TaskHistory.cancel()). Shared by the routes for the panel and
+    for API keys. Canceling it again answers the same, without another credit.
+    """
+    if await TaskHistory.cancel(task_id, account):
+        logger.info("Task %s canceled by its user", task_id)
+        return TaskOut(id=task_id, status="CANCELED")
+
+    task = await TaskHistory.get_or_none(task_id=task_id, user_id=account.id)
+    if task is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Task not found or you do not have permission to access it"
+        )
+    if task.status == "CANCELED":
+        return TaskOut(id=task_id, status="CANCELED")
+    raise HTTPException(
+        status_code=409,
+        detail="The task already started: only a task that no worker started can be canceled"
+    )
+
+
+@app.post("/api/task/cancel/{task_id}", response_model=TaskOut)
+async def cancel_task_with_api_key(task_id: str, account: Account = Depends(get_api_key_account)):
+    """
+    Cancel a task that no worker started yet, getting its credit back. It
+    stays in the history, as CANCELED. One that started can't be canceled.
+    """
+    return await cancel_task(account, task_id)
+
+
+# POST, like starting a task: the SameSite=lax cookie still goes with GET
+# navigations from other sites, so a link could trigger it.
+@app.post("/task/cancel/{task_id}", response_model=TaskOut, include_in_schema=False)
+async def cancel_task_with_session(task_id: str, user: OpenID = Depends(get_logged_user)):
+    account = await Account.get(google_id=user.id)
+    return await cancel_task(account, task_id)
 
 
 @app.get("/task_details/{task_id}", response_class=HTMLResponse)

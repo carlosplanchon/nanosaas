@@ -105,7 +105,13 @@
                                 <td class="border p-2 text-center" x-text="task.task_id"></td>
                                 <td class="border p-2 text-center" x-text="task.task_type"></td>
                                 <td class="border p-2 text-center" x-text="formatParameters(task.parameters)"></td>
-                                <td class="border p-2 text-center" x-text="task.status"></td>
+                                <td class="border p-2 text-center">
+                                    <span x-text="task.status"></span>
+                                    <!-- Until a worker starts it, it can be canceled -->
+                                    <template x-if="task.status === 'PENDING' && !task.started">
+                                        <button x-on:click="cancelTask(task)" class="block mx-auto text-sm text-red-600 hover:underline">Cancel</button>
+                                    </template>
+                                </td>
                                 <td class="border p-2 text-center" x-html="highlightJson(task.result)"></td>
                                 <td class="border p-2 text-center" x-text="task.created_at"></td>
                                 <td class="border p-2 text-center">
@@ -317,6 +323,23 @@
                         console.error('Error starting task:', error);
                         alert('An error occurred while starting the task.');
                     }
+                },
+
+                // Its credit comes back. A worker may have started it meanwhile: then it can't.
+                async cancelTask(task) {
+                    try {
+                        const response = await fetch(`{{ root_prefix }}/task/cancel/${task.task_id}`, { method: 'POST' });
+                        if (sessionExpired(response)) return;
+                        if (response.status === 409) {
+                            alert('The task already started, so it cannot be canceled.');
+                        } else if (!response.ok) {
+                            alert('Failed to cancel the task');
+                        }
+                    } catch (error) {
+                        console.error('Error canceling task:', error);
+                        alert('An error occurred while canceling the task.');
+                    }
+                    this.refresh();
                 }
             };
         }

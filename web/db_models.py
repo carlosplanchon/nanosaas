@@ -133,8 +133,9 @@ class TaskHistory(Model):
     task_id = fields.CharField(max_length=255, unique=True)
     task_type = fields.CharField(max_length=50)
     parameters = fields.JSONField()
-    # PENDING until the task ends as SUCCESS or FAILURE. Indexed: every few
-    # seconds, the workers look for the pending tasks whose lease expired.
+    # PENDING until the task ends as SUCCESS or FAILURE, or its user cancels
+    # it, CANCELED, before a worker starts it. Indexed: every few seconds,
+    # the workers look for the pending tasks whose lease expired.
     status = fields.CharField(max_length=50, default="PENDING", db_index=True)
     result = fields.JSONField(null=True)  # Store task results or error details
     created_at = fields.DatetimeField(auto_now_add=True)
@@ -219,6 +220,25 @@ class TaskHistory(Model):
                 await Account.refund_credit(google_id)
 
         return deleted == 1
+
+    @classmethod
+    async def cancel(cls, task_id: str, account: Account) -> bool:
+        """
+        Cancel an account's pending task that no worker started, and give
+        its credit back. It stays in the history, as CANCELED: a worker
+        that takes it from the queue skips it, as it only starts pending
+        tasks (see start()). A worker that starts it meanwhile wins: then
+        this doesn't cancel it.
+        Returns False if the task isn't the account's, started or ended.
+        """
+        async with in_transaction():
+            canceled = await cls.filter(
+                task_id=task_id, user_id=account.id, status="PENDING", started_at__isnull=True
+            ).update(status="CANCELED")
+            if canceled:
+                await Account.refund_credit(account.google_id)
+
+        return canceled == 1
 
     @classmethod
     async def finish(cls, task_id: str, result=None, error: BaseException | None = None) -> bool:
