@@ -2,7 +2,8 @@
 TaskIQ broker for the tests' worker: the app's tasks, plus one that always
 raises, to test what happens to a task that fails with an exception, one
 more to start through start_task(), one with a parameter of each kind, for
-the panel's inputs, and one that returns the IDs the worker gives it.
+the panel's inputs, one that returns the IDs the worker gives it, and one
+that costs 3 credits.
 """
 from enum import Enum
 from typing import Literal
@@ -10,6 +11,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 from taskiq_task import broker
+from web.db_models import TaskError
 
 
 @broker.task(task_name="explode")
@@ -20,6 +22,14 @@ async def explode():
 @broker.task(task_name="square")
 async def square(n: int, user_id: str):
     return n * n
+
+
+@broker.task(task_name="costly", cost=3)
+async def costly(fail: bool, user_id: str):
+    """Cost 3 credits, and fail if asked to."""
+    if fail:
+        raise TaskError("It failed, as asked.")
+    return "done"
 
 
 @broker.task(task_name="ids")

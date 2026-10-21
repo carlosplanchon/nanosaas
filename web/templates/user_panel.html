@@ -43,9 +43,10 @@
                 <span x-text="credits" class="text-blue-500 font-bold"></span>
             </div>
 
-            <!-- Info Box: the chosen task's description -->
-            <div x-show="chosenTask()?.description" class="bg-blue-100 border border-blue-300 text-blue-700 p-4 rounded-md mb-6">
-                <p x-text="chosenTask()?.description"></p>
+            <!-- Info Box: the chosen task's description, and its cost -->
+            <div x-show="chosenTask()" class="bg-blue-100 border border-blue-300 text-blue-700 p-4 rounded-md mb-6">
+                <p x-show="chosenTask()?.description" x-text="chosenTask()?.description" class="mb-2"></p>
+                <p x-text="formatCost(chosenTask()?.cost)" class="text-sm"></p>
             </div>
 
             <!-- Task Input: the chosen task, and an input for each of its parameters -->

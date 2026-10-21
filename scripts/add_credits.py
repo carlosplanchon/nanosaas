@@ -25,7 +25,7 @@ async def add_credits(email: str, credits: int) -> int | None:
     """Add the credits, and return the new balance, or None if there's no such account."""
     await Tortoise.init(config=TORTOISE_ORM)
     try:
-        # In a single UPDATE, like Account.reserve_credit(), so it can't undo a task's.
+        # In a single UPDATE, like Account.reserve_credits(), so it can't undo a task's.
         if not await Account.filter(email=email).update(credits=F("credits") + credits):
             return None
         return (await Account.get(email=email)).credits

@@ -17,6 +17,12 @@ function formatParameters(parameters) {
     return Object.entries(parameters ?? {}).map(([name, value]) => `${name}: ${JSON.stringify(value)}`).join(', ');
 }
 
+// What a task costs, like "Costs 3 credits, ...", before the task types load: nothing.
+function formatCost(cost) {
+    if (!cost) return '';
+    return `Costs ${cost} credit${cost === 1 ? '' : 's'}, given back if it fails or is canceled.`;
+}
+
 // A parameter's input: a list to choose from, for an enum or a Literal,
 // or else the one of its JSON schema type. Lists, and objects like dicts
 // and models, are typed as JSON.

@@ -89,16 +89,16 @@ async def create_account(db, credits=5):
     return Account(account_id, google_id, api_key, session_cookie(google_id), db)
 
 
-async def insert_task(db, account, status="PENDING", result=None):
+async def insert_task(db, account, status="PENDING", result=None, cost=1):
     """A history row, like the one start_task() creates before queueing."""
     task_id = str(uuid.uuid4())
     await db.execute(
         """
         INSERT INTO taskhistory (task_id, task_type, parameters, status, result,
-                                 created_at, user_id)
-        VALUES ($1, 'divide', '{"x": 6, "y": 3}', $2, $3, now(), $4)
+                                 created_at, user_id, cost)
+        VALUES ($1, 'divide', '{"x": 6, "y": 3}', $2, $3, now(), $4, $5)
         """,
-        task_id, status, None if result is None else json.dumps(result), account.id,
+        task_id, status, None if result is None else json.dumps(result), account.id, cost,
     )
     return task_id
 

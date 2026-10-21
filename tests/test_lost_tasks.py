@@ -83,7 +83,8 @@ async def test_a_task_whose_workers_keep_dying_fails_after_its_attempts(
         workers.append(start_worker(retry_server))
 
     assert await wait_for_row(retry_db, task_id, "FAILURE") == ("FAILURE", {**ERROR, "error": "TaskLost"})
-    assert f"Task {task_id} lost its worker in each of its 2 runs: failed." in workers[-1].log.read_text()
+    # The worker writes it right after it saves the failure.
+    await wait_for_log(workers[-1].log, f"Task {task_id} lost its worker in each of its 2 runs: failed.")
     assert await retry_account.credits() == 5
 
 

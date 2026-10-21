@@ -251,6 +251,8 @@ class TaskHistoryItem(BaseModel):
     created_at: datetime.datetime
     # Until a worker starts it, a pending task can be canceled.
     started: bool
+    # The credits it cost when it started, given back if it failed or was canceled.
+    cost: int
 
 
 # A page of the history, the latest tasks first.
@@ -584,7 +586,8 @@ async def task_history_page(account: Account, before: str | None, limit: int) ->
                 status=task.status,
                 result=task.result,
                 created_at=task.created_at,
-                started=task.started_at is not None
+                started=task.started_at is not None,
+                cost=task.cost
             )
             for task in rows[:limit]
         ],
@@ -693,6 +696,18 @@ TASK_DEADLINE = datetime.timedelta(seconds=ATTEMPTS * (QUEUE_TIMEOUT + TIME_LIMI
 QUEUE_DEADLINE = datetime.timedelta(seconds=QUEUE_TIMEOUT + 60)
 
 
+def task_cost(task: AsyncTaskiqDecoratedTask) -> int:
+    """
+    The credits a task costs: its cost label, as in
+    @broker.task(task_name="render", cost=5), or 1 without one.
+    """
+    cost = task.labels.get("cost", 1)
+    # Not a bool either, which Python takes for an int.
+    if type(cost) is not int or cost < 1:
+        raise ValueError(f"The cost of the task {task.task_name} isn't a whole number of credits, 1 or more: {cost!r}")
+    return cost
+
+
 @functools.cache
 def parameters_model(task_name: str) -> type[BaseModel]:
     """
@@ -736,12 +751,12 @@ async def start_task(
     idempotency_key: str | None = None
 ) -> TaskInitOut:
     """
-    Reserve a credit, save the task in history and queue it in TaskIQ,
-    with its parameters and the user's ID. Shared by every route that
-    starts a task.
+    Reserve the task's cost in credits (see task_cost()), save the task
+    in history and queue it in TaskIQ, with its parameters and the user's
+    ID. Shared by every route that starts a task.
 
-    The credit is taken before queueing, so pending tasks can never
-    add up to more than the account's credits. It is given back if
+    The credits are taken before queueing, so pending tasks can never
+    add up to more than the account's credits. They are given back if
     the task fails, so only successful runs are charged.
 
     A request with the idempotency key of a task the account already
@@ -753,7 +768,8 @@ async def start_task(
     await refresh_overdue_tasks(account.google_id)
 
     task_id = str(uuid.uuid4())
-    # The credit and the row together: every credit taken has a pending
+    cost = task_cost(task)
+    # The credits and the row together: every credit taken has a pending
     # row, which gives it back if the task fails or gets lost. The row is
     # saved before the task is queued, so the worker always finds it.
     async with in_transaction():
@@ -776,7 +792,7 @@ async def start_task(
                 status_code=429,
                 detail=f"Too many pending tasks: an account can have up to {MAX_PENDING_TASKS}. Wait for one to end."
             )
-        if not await Account.reserve_credit(account.google_id):
+        if not await Account.reserve_credits(account.google_id, cost):
             raise HTTPException(status_code=403, detail="Not enough credits")
         await TaskHistory.create(
             user=account,
@@ -784,7 +800,8 @@ async def start_task(
             task_type=task.task_name,
             parameters=parameters,
             status="PENDING",
-            idempotency_key=idempotency_key
+            idempotency_key=idempotency_key,
+            cost=cost
         )
 
     try:
@@ -812,7 +829,7 @@ async def refresh_task(task_row: TaskHistory) -> None:
     The worker saves each task when it ends. This covers the ones it
     couldn't save (for example, with the database down), as long as the
     result backend still has their result: it forgets results after a day.
-    A task that never ends fails at its deadline, giving its credit back.
+    A task that never ends fails at its deadline, giving its credits back.
     """
     if task_row.status != "PENDING":
         return
@@ -879,7 +896,7 @@ def parameter_input(name: str, field: dict, definitions: dict) -> dict:
 
 @app.get("/user/tasks")
 async def list_tasks(user: OpenID = Depends(get_logged_user)):
-    """The tasks the user can start, with their description and parameters."""
+    """The tasks the user can start, with their description, parameters and cost."""
     tasks = []
     for name, task in sorted(broker.get_all_tasks().items()):
         schema = parameters_model(name).model_json_schema()
@@ -887,6 +904,7 @@ async def list_tasks(user: OpenID = Depends(get_logged_user)):
         tasks.append({
             "name": name,
             "description": inspect.getdoc(task.original_func) or "",
+            "cost": task_cost(task),
             "parameters": [
                 parameter_input(parameter, field, definitions)
                 for parameter, field in schema.get("properties", {}).items()
@@ -899,10 +917,13 @@ def add_task_routes(name: str, task: AsyncTaskiqDecoratedTask) -> None:
     """
     Add the routes that start a task, with its parameters in a JSON
     object: POST /api/task/<name> for API keys, which /docs shows with
-    the parameters and the docstring, and POST /task/<name> for the
-    panel. FastAPI checks the parameters before they spend a credit.
+    the parameters, the docstring and the cost, and POST /task/<name>
+    for the panel. FastAPI checks the parameters before they spend any
+    credit. A task with a wrong cost label fails here, when the app starts.
     """
     parameters_type = parameters_model(name)
+    cost = task_cost(task)
+    paying = f"Costs {cost} credit{'' if cost == 1 else 's'}, given back if the task fails or is canceled."
 
     async def start_with_api_key(
         parameters: parameters_type,
@@ -911,7 +932,7 @@ def add_task_routes(name: str, task: AsyncTaskiqDecoratedTask) -> None:
             ):
         return await start_task(account, task, parameters.model_dump(mode="json"), idempotency_key)
 
-    # POST because it spends a credit: the SameSite=lax cookie still goes
+    # POST because it spends credits: the SameSite=lax cookie still goes
     # with GET navigations from other sites, so a link could trigger it.
     async def start_with_session(
         parameters: parameters_type,
@@ -924,7 +945,8 @@ def add_task_routes(name: str, task: AsyncTaskiqDecoratedTask) -> None:
     app.add_api_route(
         f"/api/task/{name}", start_with_api_key, methods=["POST"],
         response_model=TaskInitOut, name=f"start_{name}_with_api_key", tags=["tasks"],
-        summary=f"Start {name}", description=inspect.getdoc(task.original_func)
+        summary=f"Start {name}",
+        description="\n\n".join(filter(None, [inspect.getdoc(task.original_func), paying]))
     )
     app.add_api_route(
         f"/task/{name}", start_with_session, methods=["POST"],
@@ -966,9 +988,9 @@ async def get_status(task_id: str, user: OpenID = Depends(get_logged_user)):
 
 async def cancel_task(account: Account, task_id: str) -> TaskOut:
     """
-    Cancel the account's task, if no worker started it, giving its credit
+    Cancel the account's task, if no worker started it, giving its credits
     back (see TaskHistory.cancel()). Shared by the routes for the panel and
-    for API keys. Canceling it again answers the same, without another credit.
+    for API keys. Canceling it again answers the same, without more credits.
     """
     if await TaskHistory.cancel(task_id, account):
         logger.info("Task %s canceled by its user", task_id)
@@ -991,7 +1013,7 @@ async def cancel_task(account: Account, task_id: str) -> TaskOut:
 @app.post("/api/task/cancel/{task_id}", response_model=TaskOut)
 async def cancel_task_with_api_key(task_id: str, account: Account = Depends(get_api_key_account)):
     """
-    Cancel a task that no worker started yet, getting its credit back. It
+    Cancel a task that no worker started yet, getting its credits back. It
     stays in the history, as CANCELED. One that started can't be canceled.
     """
     return await cancel_task(account, task_id)
@@ -1070,6 +1092,7 @@ async def get_task_details_json_from_user(
                 "status": task.status,
                 "result": task.result,
                 "created_at": task.created_at.isoformat(),
+                "cost": task.cost,
             }
         )
 
@@ -1121,6 +1144,7 @@ async def get_task_details_json(
                 "status": task.status,
                 "result": task.result,
                 "created_at": task.created_at.isoformat(),
+                "cost": task.cost,
             }
         )
 

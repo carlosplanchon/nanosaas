@@ -47,7 +47,7 @@ async def test_the_pages_show_the_tasks_up_to_date(app_module, db, account, hist
     task = first["tasks"][1]
     assert task == {
         "task_id": latest_first[1], "task_type": "divide", "parameters": {"x": 6, "y": 3},
-        "status": "SUCCESS", "result": 2.0, "created_at": task["created_at"], "started": False,
+        "status": "SUCCESS", "result": 2.0, "created_at": task["created_at"], "started": False, "cost": 1,
     }
     # With its time zone: without one, the panel would take it for the browser's.
     assert datetime.datetime.fromisoformat(task["created_at"]).utcoffset() == datetime.timedelta(0)

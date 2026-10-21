@@ -19,6 +19,7 @@ function taskDetails(taskId) {
             task_type: '',
             parameters: null,
             status: '',
+            cost: '',
             result: '',
             created_at: ''
         },

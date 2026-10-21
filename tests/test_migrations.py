@@ -9,7 +9,7 @@ from tortoise.context import TortoiseContext
 from tortoise.migrations.api import migrate
 from tortoise.migrations.autodetector import MigrationAutodetector
 
-from tests.helpers import client_for, create_account, insert_task
+from tests.helpers import client_for, create_account
 
 pytestmark = pytest.mark.anyio
 
@@ -70,7 +70,15 @@ async def test_a_database_from_before_the_migrations_keeps_its_data(services, st
     try:
         await db.execute("DROP TABLE tortoise_migrations")
         account = await create_account(db)
-        task_id = await insert_task(db, account, status="SUCCESS", result=2.0)
+        # With the columns of the first migration's table.
+        task_id = str(uuid.uuid4())
+        await db.execute(
+            """
+            INSERT INTO taskhistory (task_id, task_type, parameters, status, result, created_at, user_id)
+            VALUES ($1, 'divide', '{"x": 6, "y": 3}', 'SUCCESS', '2.0', now(), $2)
+            """,
+            task_id, account.id,
+        )
 
         # Twice: the second start finds the migrations already recorded.
         for attempt in ("first", "second"):
@@ -78,7 +86,8 @@ async def test_a_database_from_before_the_migrations_keeps_its_data(services, st
             async with client_for(server) as anon:
                 headers = {"X-API-Key": account.api_key}
                 r = await anon.get(f"/api/task_details/{task_id}", headers=headers)
-                assert (r.json()["status"], r.json()["result"]) == ("SUCCESS", 2.0)
+                # It cost a credit, the default of its column.
+                assert (r.json()["status"], r.json()["result"], r.json()["cost"]) == ("SUCCESS", 2.0, 1)
                 r = await anon.get("/api/user_credits", headers=headers)
                 assert r.json() == {"credits": 5}
             rows = await db.fetch("SELECT app, name FROM tortoise_migrations ORDER BY name")

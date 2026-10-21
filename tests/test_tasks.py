@@ -119,6 +119,7 @@ async def test_the_panel_lists_the_tasks_with_their_parameters(user):
             {"name": "x", "type": "integer", "options": None, "default": None},
             {"name": "y", "type": "integer", "options": None, "default": None},
         ],
+        "cost": 1,
     }]
 
 
@@ -151,7 +152,10 @@ async def test_the_docs_show_each_task_with_its_parameters(anon):
     schema = (await anon.get("/openapi.json")).json()
     operation = schema["paths"]["/api/task/divide"]["post"]
     assert (operation["summary"], operation["description"], operation["tags"]) == (
-        "Start divide", "Divide x by y. It waits 5 seconds first, like a long-running task.", ["tasks"]
+        "Start divide",
+        "Divide x by y. It waits 5 seconds first, like a long-running task.\n\n"
+        "Costs 1 credit, given back if the task fails or is canceled.",
+        ["tasks"],
     )
     parameters = schema["components"]["schemas"]["divide_parameters"]
     assert parameters["properties"] == {"x": {"type": "integer", "title": "X"}, "y": {"type": "integer", "title": "Y"}}

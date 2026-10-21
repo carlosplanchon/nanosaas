@@ -60,7 +60,7 @@ class SaveFinishedTasks(TaskiqMiddleware):
     """
     Save every task in its history row as soon as it ends, instead of
     waiting for someone to check it before the result backend forgets
-    it (after a day). Failed tasks get their credit back.
+    it (after a day). Failed tasks get their credits back.
     """
 
     async def post_execute(self, message, result):

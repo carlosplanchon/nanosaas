@@ -52,23 +52,23 @@ class Account(Model):
         return self.api_key_hash[:8] if self.api_key_hash else None
 
     @classmethod
-    async def reserve_credit(cls, google_id: str) -> bool:
+    async def reserve_credits(cls, google_id: str, credits: int) -> bool:
         """
-        Take one credit in a single UPDATE, so concurrent requests
+        Take credits in a single UPDATE, so concurrent requests
         can't spend more credits than the account has.
-        Returns False if there were no credits left.
+        Returns False if it didn't have that many.
         """
         updated = await cls.filter(
             google_id=google_id,
-            credits__gte=1
-        ).update(credits=F("credits") - 1)
+            credits__gte=credits
+        ).update(credits=F("credits") - credits)
         return updated == 1
 
     @classmethod
-    async def refund_credit(cls, google_id: str) -> None:
-        """Give back a credit taken with reserve_credit()."""
+    async def refund_credits(cls, google_id: str, credits: int) -> None:
+        """Give back credits taken with reserve_credits()."""
         await cls.filter(google_id=google_id).update(
-            credits=F("credits") + 1
+            credits=F("credits") + credits
         )
 
     @classmethod
@@ -149,6 +149,10 @@ class TaskHistory(Model):
     # The Idempotency-Key of the request that started the task, if it had
     # one: the account's requests with the same key get this task.
     idempotency_key = fields.CharField(max_length=255, null=True)
+    # The credits it cost when it started, which it gives back if it fails,
+    # is canceled or gets lost, whatever the task's cost is by then. Also a
+    # default of the column, for the tasks from before costs: they cost 1.
+    cost = fields.IntField(default=1, db_default=1)
 
     class Meta:
         unique_together = (("user", "idempotency_key"),)
@@ -211,25 +215,27 @@ class TaskHistory(Model):
     @classmethod
     async def give_up(cls, task_id: str, google_id: str) -> bool:
         """
-        Delete a task that couldn't be queued and give its credit back,
+        Delete a task that couldn't be queued and give its credits back,
         unless a worker already started it: then Redis did queue it, and
         only the reply to the API was lost.
         Returns False if a worker started it.
         """
         async with in_transaction():
-            deleted = await cls.filter(
+            # Locked: a worker that starts it meanwhile waits, and then finds it gone.
+            task = await cls.select_for_update().get_or_none(
                 task_id=task_id, status="PENDING", started_at__isnull=True
-            ).delete()
-            if deleted:
-                await Account.refund_credit(google_id)
+            )
+            if task is not None:
+                await task.delete()
+                await Account.refund_credits(google_id, task.cost)
 
-        return deleted == 1
+        return task is not None
 
     @classmethod
     async def cancel(cls, task_id: str, account: Account) -> bool:
         """
         Cancel an account's pending task that no worker started, and give
-        its credit back. It stays in the history, as CANCELED: a worker
+        its credits back. It stays in the history, as CANCELED: a worker
         that takes it from the queue skips it, as it only starts pending
         tasks (see start()). A worker that starts it meanwhile wins: then
         this doesn't cancel it.
@@ -240,7 +246,8 @@ class TaskHistory(Model):
                 task_id=task_id, user_id=account.id, status="PENDING", started_at__isnull=True
             ).update(status="CANCELED")
             if canceled:
-                await Account.refund_credit(account.google_id)
+                task = await cls.get(task_id=task_id)
+                await Account.refund_credits(account.google_id, task.cost)
 
         return canceled == 1
 
@@ -252,7 +259,7 @@ class TaskHistory(Model):
 
         The worker calls this when a task ends, and the API when it finds
         a finished task the worker couldn't save. The update only matches
-        pending rows, so a failed task's credit is given back once.
+        pending rows, so a failed task's credits are given back once.
         Returns False if the task has no row or was already finished.
         """
         if error is not None:
@@ -277,6 +284,6 @@ class TaskHistory(Model):
             if updated and error is not None:
                 # Only successful tasks are charged.
                 task = await cls.get(task_id=task_id).prefetch_related("user")
-                await Account.refund_credit(task.user.google_id)
+                await Account.refund_credits(task.user.google_id, task.cost)
 
         return updated == 1
