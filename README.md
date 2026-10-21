@@ -125,6 +125,8 @@ To serve the app on your domain, run it with [Caddy](https://caddyserver.com/), 
 
 Without `DOMAIN`, Caddy serves `https://localhost`, with a certificate of its own that browsers warn about: that way you can try HTTPS on your machine.
 
+Caddy also tells browsers to use only HTTPS for your domain, for a year after each visit (the `Strict-Transport-Security` header, in `Caddyfile`): if you may serve it without HTTPS again, remove that line first. Behind another proxy instead of Caddy, set the header there.
+
 Any Google account can log in, and each new account gets `INITIAL_CREDITS` credits, so on a public server anyone can use them, even with several accounts. To choose who runs tasks, set `INITIAL_CREDITS = 0` in `config.toml` and give credits from the admin page or with `scripts/add_credits.py` (see Usage), once the user has logged in.
 
 ---
@@ -211,6 +213,8 @@ Any Google account can log in, and each new account gets `INITIAL_CREDITS` credi
 
    Return plain Python values (dicts, lists, numbers or strings): TaskIQ turns them into JSON. Don't return `json.dumps(...)`: the result would be saved as a string, and the API would show it with escaped quotes.
 7. Customize the pages in `web/templates/`. Put images, icons and other static files in `web/static/`: they are served at `/web/static/`. In the templates, get their URLs with `static_url()`, as the logo in `login.html` does: `{{ static_url('nanosaas_logo.svg') }}`. It adds the `ROOT_PATH`, and a hash of the file, so after a deploy that changes it, browsers get the new one instead of reusing the copy they kept.
+
+   The pages' scripts are files there too, like `user_panel.js` for `user_panel.html`, and take the `ROOT_PATH` from the `data-root-prefix` of the page's `<html>`. Every response has a Content-Security-Policy (`CONTENT_SECURITY_POLICY` in `main_api.py`) that lets the pages load only this server's files, and blocks scripts and styles written in the page, like `<script>` blocks and `onclick` or `style` attributes: the usual way injected HTML runs its code. For events, use the attributes of Alpine.js, like `x-on:click`. The policy allows them with `'unsafe-eval'`, so on the pages that load Alpine.js, injected HTML could still run code through them. To load something from another site, add it to the policy. With the policy and `X-Frame-Options: DENY`, no site can show the pages in a frame. The responses also have `X-Content-Type-Options: nosniff` and `Referrer-Policy: same-origin`. The docs, at `/docs` and `/redoc`, go without the policy: FastAPI makes their pages with inline scripts, which load Swagger UI and ReDoc from a CDN.
 
    The pages load Tailwind from `web/static/tailwind.css`, which only has the classes used in the templates and in the scripts of `web/static/`, like the colors of the results' JSON in `json.js`. After changing them, rebuild it with `python scripts/build_css.py`: it uses Tailwind's standalone CLI, which doesn't need Node.js and is downloaded the first time. The tests fail if one of their classes is missing from it.
 

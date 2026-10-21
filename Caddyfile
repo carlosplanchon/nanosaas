@@ -1,4 +1,6 @@
 # The app over HTTPS at DOMAIN: Caddy gets and renews its certificate by itself.
 {$DOMAIN} {
 	reverse_proxy api:8000
+	# Browsers that visited the site use only HTTPS for it, for a year (HSTS).
+	header Strict-Transport-Security "max-age=31536000"
 }

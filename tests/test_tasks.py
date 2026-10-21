@@ -67,7 +67,11 @@ async def test_task_details_page_fetches_its_data(db, account, user):
     task_id = await insert_task(db, account, status="SUCCESS", result=2.0)
     page = await user.get(f"/task_details/{task_id}")
     assert page.status_code == 200
-    url = re.search(r"fetch\(`([^`]+)`\)", page.text).group(1).replace("${taskId}", task_id)
+    # Its script, which takes the ROOT_PATH from the page.
+    root_prefix = re.search(r'<html lang="en" data-root-prefix="([^"]*)">', page.text).group(1)
+    script = await user.get(re.search(r'<script src="([^"]*/task_details\.js\?v=[^"]+)"', page.text).group(1))
+    url = re.search(r"fetch\(`([^`]+)`\)", script.text).group(1)
+    url = url.replace("${ROOT_PREFIX}", root_prefix).replace("${taskId}", task_id)
     r = await user.get(url)
     assert r.status_code == 200
     assert r.json()["result"] == 2.0

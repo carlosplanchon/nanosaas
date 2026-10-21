@@ -51,6 +51,8 @@ from tortoise.transactions import in_transaction
 
 from fastapi.staticfiles import StaticFiles
 
+from starlette.datastructures import MutableHeaders
+
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from taskiq import AsyncTaskiqDecoratedTask
@@ -112,6 +114,59 @@ app = FastAPI(
     lifespan=lifespan,
     exception_handlers=tortoise_exception_handlers()
 )
+
+
+# What the pages can load and run: only this server's files, without inline
+# scripts or event handlers, the usual way injected HTML runs its code. Alpine.js
+# evaluates the expressions of its attributes with Function, which needs
+# 'unsafe-eval'. No site can show the pages in a frame, to trick users into
+# clicking their buttons.
+CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; script-src 'self' 'unsafe-eval'; object-src 'none'; "
+    "base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+)
+
+# For every response: browsers take each file for the type it's served as,
+# don't show it in a frame, and don't send its URL to other sites.
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "same-origin",
+}
+
+# The pages of the docs go without the policy: FastAPI makes them with inline
+# scripts, which load Swagger UI and ReDoc from a CDN. With and without the
+# ROOT_PATH, as the routes match them.
+DOCS_PATHS = {
+    prefix + path
+    for path in (app.docs_url, app.redoc_url, app.swagger_ui_oauth2_redirect_url) if path
+    for prefix in ("", root_prefix)
+}
+
+
+class SecurityHeadersMiddleware:
+    """Add SECURITY_HEADERS to every response, and CONTENT_SECURITY_POLICY to all but the docs'."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                for name, value in SECURITY_HEADERS.items():
+                    headers.setdefault(name, value)
+                if scope["path"] not in DOCS_PATHS:
+                    headers.setdefault("Content-Security-Policy", CONTENT_SECURITY_POLICY)
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
+
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 # Mount static files directory
