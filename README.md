@@ -229,6 +229,7 @@ Any Google account can log in, and each new account gets `INITIAL_CREDITS` credi
 ## Development Notes
 
 - To monitor tasks, read the worker's log: it shows each task it runs, and the errors, with their traceback, except a `TaskError`, which takes a line. With Docker, `docker compose logs -f worker`. The `taskhistory` table keeps every task's status and result.
+- `/health` answers 200 while the API can use PostgreSQL and Redis, and 503 when one of them doesn't answer within 2 seconds (`HEALTH_TIMEOUT` in `main_api.py`), down or hung: it says which one, and the API's log says why. The healthcheck of `compose.yaml` asks it every 30 seconds, so `docker compose ps` shows the API as unhealthy meanwhile. To hear about it, point an uptime monitor at `https://your-domain.com/health`.
 - The database changes are migrations in `web/migrations/`, made with Tortoise ORM's own tool. The backend applies the new ones when it starts, and records them in the `tortoise_migrations` table. After changing the models in `web/db_models.py`, create a migration from the repository root, with the virtual environment activated (it reads `config.toml`, but doesn't connect to the database):
     ```bash
     tortoise -c shared.TORTOISE_ORM makemigrations

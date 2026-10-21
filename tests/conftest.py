@@ -68,9 +68,13 @@ def services():
 
 def write_config(
     path, services, port, root_path="", broker=None, db_name=None, initial_credits=None, admins=None,
-    max_pending_tasks=None, **taskiq
+    max_pending_tasks=None, db_address=None, **taskiq
 ):
-    """taskiq: more settings for the [taskiq] section, like time_limit=3."""
+    """
+    db_address: another (host, port) for PostgreSQL, like a proxy's.
+    taskiq: more settings for the [taskiq] section, like time_limit=3.
+    """
+    db_host, db_port = db_address or (services.db_host, services.db_port)
     broker = broker or services.redis_url
     app = "" if initial_credits is None else f"INITIAL_CREDITS = {initial_credits}\n"
     app += "" if admins is None else f"ADMINS = {json.dumps(admins)}\n"
@@ -87,8 +91,8 @@ GOOGLE_CLIENT_SECRET = "test-client-secret"
 GOOGLE_REDIRECT_URI = "http://127.0.0.1:{port}/auth/callback"
 
 [database]
-DB_HOST = "{services.db_host}"
-DB_PORT = {services.db_port}
+DB_HOST = "{db_host}"
+DB_PORT = {db_port}
 DB_NAME = "{db_name or services.db_name}"
 DB_USERNAME = "{services.db_user}"
 DB_PASSWORD = "{services.db_password}"

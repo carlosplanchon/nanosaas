@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+import asyncio
+
 # to calculate expiration of the JWT
 import datetime
 
@@ -57,6 +59,8 @@ from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from taskiq import AsyncTaskiqDecoratedTask
 from taskiq_redis.exceptions import ResultIsMissingError
+
+from redis.asyncio import Redis
 
 from taskiq_task import broker
 from taskiq_task import ATTEMPTS, LEASE, QUEUE_TIMEOUT, TIME_LIMIT
@@ -1157,6 +1161,73 @@ async def get_task_details_json(
             status_code=500,
             detail="Error retrieving task details"
         )
+
+
+############################
+#                          #
+#      --- HEALTH ---      #
+#                          #
+############################
+# How long /health waits for PostgreSQL, and for Redis.
+HEALTH_TIMEOUT = 2
+
+# The pings that didn't answer in time, until they end: asyncio keeps only
+# weak references to its tasks.
+unanswered_pings: set[asyncio.Task] = set()
+
+
+def forget_ping(ping: asyncio.Task) -> None:
+    unanswered_pings.discard(ping)
+    if not ping.cancelled():
+        ping.exception()  # Taken, so asyncio doesn't log it as never retrieved.
+
+
+async def answers(name: str, ping: typing.Callable[[], typing.Awaitable]) -> bool:
+    """Whether a service answers a ping within HEALTH_TIMEOUT seconds: why not goes to the log."""
+    task = asyncio.ensure_future(ping())
+    await asyncio.wait({task}, timeout=HEALTH_TIMEOUT)
+    if not task.done():
+        # Canceled, but not awaited: the cleanup of a canceled query, like giving
+        # its connection back to the pool, waits for the service too.
+        task.cancel()
+        unanswered_pings.add(task)
+        task.add_done_callback(forget_ping)
+        logger.warning("Health check: %s doesn't answer in %d seconds", name, HEALTH_TIMEOUT)
+        return False
+    if task.exception() is not None:
+        logger.warning("Health check: %s doesn't answer: %r", name, task.exception())
+        return False
+    return True
+
+
+async def ping_postgres() -> None:
+    await Tortoise.get_connection("default").execute_query("SELECT 1")
+
+
+async def ping_redis() -> None:
+    """The broker's Redis, which queues the tasks, and the result backend's, if it's another."""
+    for pool in (broker.connection_pool, broker.result_backend.redis_pool):
+        async with Redis(connection_pool=pool) as redis:
+            await redis.ping()
+
+
+@app.get("/health", include_in_schema=False)
+async def health():
+    """
+    Whether the app can use PostgreSQL and Redis: 200, or 503 if one of them
+    doesn't answer in time, without the details, which go to the log. The
+    healthcheck of compose.yaml asks it, and so can an uptime monitor.
+    """
+    postgres, redis = await asyncio.gather(answers("PostgreSQL", ping_postgres), answers("Redis", ping_redis))
+    ok = postgres and redis
+    return JSONResponse(
+        {
+            "status": "ok" if ok else "error",
+            "postgres": "ok" if postgres else "error",
+            "redis": "ok" if redis else "error",
+        },
+        status_code=200 if ok else 503
+    )
 
 
 ###########################

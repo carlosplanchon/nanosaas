@@ -50,8 +50,9 @@ services:
       # Only reachable from this machine: Docker-published ports skip firewalls like ufw.
       - 127.0.0.1:8000:8000
     healthcheck:
-      # It answers once the migrations are applied. Every second while it starts, then every 30.
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/openapi.json', timeout=5)"]
+      # /health answers once the migrations are applied, and with an error while PostgreSQL
+      # or Redis doesn't answer it. Every second while it starts, then every 30.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
       interval: 30s
       start_period: 60s
       start_interval: 1s
