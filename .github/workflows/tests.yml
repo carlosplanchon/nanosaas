@@ -119,6 +119,31 @@ jobs:
           echo "Credits after adding 5: $credits"
           [ "$credits" = 29 ]
 
+      # As the README says: a backup, a mistake, and the backup restored.
+      - name: Back up and restore the database
+        shell: bash
+        run: |
+          query() { docker compose exec -T postgres psql -U nanosaas -tAc "$1"; }
+          data="SELECT (SELECT count(*) FROM account), (SELECT sum(credits) FROM account), (SELECT count(*) FROM taskhistory)"
+          docker compose exec -T backup sh /backup.sh once
+          backup=$(docker compose exec -T backup ls /backups | tail -n 1)
+          before=$(query "$data")
+          # The accounts, and their tasks with them.
+          query "DELETE FROM account"
+          docker compose stop api worker
+          docker compose exec -T backup sh /backup.sh restore "$backup"
+          docker compose up --detach --wait
+          after=$(query "$data")
+          echo "Before the mistake: $before. After restoring $backup: $after"
+          [ "$before" = "$after" ]
+
+          # Only the latest BACKUP_KEEP stay.
+          for _ in 1 2 3; do
+            sleep 1
+            docker compose exec -T -e BACKUP_KEEP=2 backup sh /backup.sh once
+          done
+          [ "$(docker compose exec -T backup ls /backups | wc -l)" = 2 ]
+
       # Caddy, with a certificate of its own for localhost, DOMAIN's default.
       - name: Serve it over HTTPS
         env:

@@ -129,6 +129,26 @@ Caddy also tells browsers to use only HTTPS for your domain, for a year after ea
 
 Any Google account can log in, and each new account gets `INITIAL_CREDITS` credits, so on a public server anyone can use them, even with several accounts. To choose who runs tasks, set `INITIAL_CREDITS = 0` in `config.toml` and give credits from the admin page or with `scripts/add_credits.py` (see Usage), once the user has logged in.
 
+### Backups
+
+The `backup` service of `compose.yaml` backs up the database once a day with `pg_dump`, in its `backups` volume, and keeps the latest 7. Each one is named after its date and time, in UTC, like `nanosaas-20261021-030000.dump`. To change how often, or how many, set `BACKUP_INTERVAL`, in seconds, and `BACKUP_KEEP` in its `environment`. Restarting it, as each deploy does, doesn't take one more: the next one comes a day after the latest.
+
+They protect the data from a mistake, like a wrong delete or a migration gone wrong, but they're on the same server. Copy them somewhere else too, for example every day with a cron job that runs `docker compose cp backup:/backups ./backups` and sends that folder away with rsync or rclone.
+
+To back up the database now, or see the backups:
+```bash
+docker compose exec backup sh /backup.sh once
+docker compose exec backup ls /backups
+```
+
+To restore one, stop the API and the worker first, so nothing writes meanwhile, and start them again afterwards:
+```bash
+docker compose stop api worker
+docker compose exec backup sh /backup.sh restore nanosaas-20261021-030000.dump
+docker compose start api worker
+```
+It replaces the whole database, in a single transaction: if anything fails, the database stays as it was. Then it's as it was at the backup: the accounts have the credits they had, and the tasks started since are gone from the history (the workers skip the ones still queued). If the backup is from before some migrations, the backend applies them when it starts.
+
 ---
 
 ## Usage
@@ -261,7 +281,7 @@ pytest
 
 They take a few minutes: the example task waits 5 seconds, and some tests wait for tasks to time out.
 
-GitHub Actions runs them with Python 3.11 and 3.15 on every push to `main` and on every pull request (`.github/workflows/tests.yml`). It also starts the app with Docker Compose and runs two tasks through the API. Every week, Dependabot opens pull requests with the new versions of the Python packages and of the workflow's actions, which are pinned (`.github/dependabot.yml`), and the tests run on them. It doesn't watch Alpine.js, in `web/static/`: update it by hand, as step 7 of Usage says.
+GitHub Actions runs them with Python 3.11 and 3.15 on every push to `main` and on every pull request (`.github/workflows/tests.yml`). It also starts the app with Docker Compose, runs two tasks through the API, and backs up and restores the database. Every week, Dependabot opens pull requests with the new versions of the Python packages and of the workflow's actions, which are pinned (`.github/dependabot.yml`), and the tests run on them. It doesn't watch Alpine.js, in `web/static/`: update it by hand, as step 7 of Usage says.
 
 ---
 

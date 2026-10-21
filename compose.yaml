@@ -1,4 +1,4 @@
-# The whole app: PostgreSQL, Redis, the backend and a TaskIQ worker.
+# The whole app: PostgreSQL, with its backups, Redis, the backend and a TaskIQ worker.
 name: nanosaas
 
 x-app: &app
@@ -15,12 +15,12 @@ x-app: &app
 
 services:
   postgres:
-    image: postgres:17-alpine
+    image: &postgres postgres:17-alpine
     # Only the other containers reach it. If you change these, change config.toml too.
     environment:
-      POSTGRES_USER: nanosaas
-      POSTGRES_PASSWORD: nanosaas
-      POSTGRES_DB: nanosaas
+      POSTGRES_USER: &db-user nanosaas
+      POSTGRES_PASSWORD: &db-password nanosaas
+      POSTGRES_DB: &db-name nanosaas
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -28,6 +28,27 @@ services:
       test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "nanosaas", "-d", "nanosaas"]
       interval: 2s
       retries: 30
+    restart: unless-stopped
+
+  # Backs up the database once a day, keeping the latest 7, in the backups
+  # volume: see the README's Backups.
+  backup:
+    # The database's image: its pg_dump is of the same version.
+    image: *postgres
+    command: sh /backup.sh
+    environment:
+      PGHOST: postgres
+      PGUSER: *db-user
+      PGPASSWORD: *db-password
+      PGDATABASE: *db-name
+    configs:
+      - source: backup
+        target: /backup.sh
+    volumes:
+      - backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
 
   redis:
@@ -89,9 +110,12 @@ configs:
     file: ./config.toml
   caddyfile:
     file: ./Caddyfile
+  backup:
+    file: ./scripts/backup_database.sh
 
 volumes:
   postgres-data:
+  backups:
   redis-data:
   caddy-data:
   caddy-config:
