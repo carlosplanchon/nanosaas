@@ -67,12 +67,14 @@ def services():
 
 
 def write_config(
-    path, services, port, root_path="", broker=None, db_name=None, initial_credits=None, admins=None, **taskiq
+    path, services, port, root_path="", broker=None, db_name=None, initial_credits=None, admins=None,
+    max_pending_tasks=None, **taskiq
 ):
     """taskiq: more settings for the [taskiq] section, like time_limit=3."""
     broker = broker or services.redis_url
     app = "" if initial_credits is None else f"INITIAL_CREDITS = {initial_credits}\n"
     app += "" if admins is None else f"ADMINS = {json.dumps(admins)}\n"
+    app += "" if max_pending_tasks is None else f"MAX_PENDING_TASKS = {max_pending_tasks}\n"
     settings = "".join(f"{key} = {value}\n" for key, value in taskiq.items())
     path.write_text(f"""\
 [app]
@@ -272,6 +274,18 @@ def retry_server(tmp_path_factory, services, server):
         tmp_path_factory, services, "retry", broker=broker, db_name="retry", lease=2, attempts=2
     )
     yield retry
+    process.stop()
+
+
+@pytest.fixture(scope="session")
+def limited_server(tmp_path_factory, services, server):
+    """
+    The API with MAX_PENDING_TASKS = 3, on its own Redis database, which no
+    worker reads: its tasks stay pending.
+    """
+    broker = services.redis_url.rsplit("/", 1)[0] + "/8"
+    process, limited = run_server(tmp_path_factory, services, "limited", broker=broker, max_pending_tasks=3)
+    yield limited
     process.stop()
 
 

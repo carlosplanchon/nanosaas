@@ -1,6 +1,7 @@
 [app]
 ROOT_PATH = ""  # Sub-path the app is served under, without slashes (e.g. "nanosaas"). Leave it empty to serve the app at the root.
 INITIAL_CREDITS = 25  # Credits of each new account. Any Google account can log in: on a public server, use 0 and give credits with scripts/add_credits.py.
+MAX_PENDING_TASKS = 10  # The most tasks an account can have pending, queued or running: one more gets a 429 error, so one account can't fill the queue.
 ADMINS = []  # The emails of the users who can open the admin page, /admin, to see the accounts and give them credits.
 
 [api]

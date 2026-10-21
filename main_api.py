@@ -93,6 +93,12 @@ INITIAL_CREDITS: int = CONFIG["app"].get("INITIAL_CREDITS", 25)
 # logs in users with their email verified (fastapi-sso checks it).
 ADMINS: set[str] = {email.lower() for email in CONFIG["app"].get("ADMINS", [])}
 
+# The most tasks an account can have pending, waiting in the queue or running.
+# The workers take the tasks in the order they were queued: without a limit,
+# an account with many credits could fill the queue, and the other accounts'
+# tasks would wait behind its tasks, failing after queue_timeout.
+MAX_PENDING_TASKS: int = CONFIG["app"].get("MAX_PENDING_TASKS", 10)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -740,6 +746,9 @@ async def start_task(
 
     A request with the idempotency key of a task the account already
     started gets that task, without paying again.
+
+    An account with MAX_PENDING_TASKS pending tasks can't start another
+    until one of them ends: it gets a 429 error.
     """
     await refresh_overdue_tasks(account.google_id)
 
@@ -748,10 +757,11 @@ async def start_task(
     # row, which gives it back if the task fails or gets lost. The row is
     # saved before the task is queued, so the worker always finds it.
     async with in_transaction():
+        # Lock the account until this ends: the requests sent meanwhile wait
+        # here, so a retry finds this request's task, and the others count it
+        # among the pending ones.
+        await Account.select_for_update().get(id=account.id)
         if idempotency_key is not None:
-            # Lock the account until this ends, so a retry sent meanwhile
-            # waits here, and then finds this request's task.
-            await Account.select_for_update().get(id=account.id)
             started = await TaskHistory.get_or_none(user=account, idempotency_key=idempotency_key)
             if started is not None:
                 if (started.task_type, started.parameters) != (task.task_name, parameters):
@@ -761,6 +771,11 @@ async def start_task(
                     )
                 return TaskInitOut(id=started.task_id, message="Task started successfully")
 
+        if await TaskHistory.filter(user=account, status="PENDING").count() >= MAX_PENDING_TASKS:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Too many pending tasks: an account can have up to {MAX_PENDING_TASKS}. Wait for one to end."
+            )
         if not await Account.reserve_credit(account.google_id):
             raise HTTPException(status_code=403, detail="Not enough credits")
         await TaskHistory.create(

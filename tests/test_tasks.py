@@ -235,19 +235,20 @@ async def test_regenerating_the_api_key_does_not_undo_credit_changes(account, us
             await user.post("/user/api_key")
 
     loops = [asyncio.create_task(regenerate_api_key()) for _ in range(3)]
+    # As many as MAX_PENDING_TASKS, 10.
     rs = await asyncio.gather(
-        *(user.post("/task/divide", json={"x": 6, "y": 3}) for _ in range(10)),
-        *(user.post("/task/divide", json={"x": 6, "y": 0}) for _ in range(5)),
+        *(user.post("/task/divide", json={"x": 6, "y": 3}) for _ in range(7)),
+        *(user.post("/task/divide", json={"x": 6, "y": 0}) for _ in range(3)),
     )
     assert all(r.status_code == 200 for r in rs)
     done = await asyncio.gather(*(wait_until_done(user, r.json()["id"]) for r in rs))
     stop.set()
     await asyncio.gather(*loops)
 
-    # The divisions by zero fail, and only the 10 real results are charged.
-    assert [d["status"] for d in done] == ["SUCCESS"] * 10 + ["FAILURE"] * 5
-    assert sum(d["result"] == 2.0 for d in done) == 10
-    assert await account.credits() == 10
+    # The divisions by zero fail, and only the 7 real results are charged.
+    assert [d["status"] for d in done] == ["SUCCESS"] * 7 + ["FAILURE"] * 3
+    assert sum(d["result"] == 2.0 for d in done) == 7
+    assert await account.credits() == 13
 
 
 async def test_with_the_broker_down_the_credit_comes_back_and_no_row_is_left(
