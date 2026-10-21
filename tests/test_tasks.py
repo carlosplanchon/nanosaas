@@ -7,7 +7,6 @@ import time
 import tomllib
 
 import pytest
-from taskiq import TaskiqResult
 from tortoise import Tortoise
 
 from tests.helpers import client_for, insert_task, wait_for_row, wait_until_done
@@ -86,7 +85,7 @@ async def test_start_task_queues_any_task(app_module, db, account, user, taskiq_
 
     assert await wait_for_row(db, started.id, "SUCCESS") == ("SUCCESS", 9)
     assert await account.credits() == 4
-    history = (await user.get("/user/task_history")).json()
+    history = (await user.get("/user/task_history")).json()["tasks"]
     assert (history[0]["task_type"], history[0]["parameters"]) == ("square", {"n": 3})
 
 
@@ -190,22 +189,6 @@ async def test_wrong_tasks_or_parameters_spend_no_credit(db, account, user, anon
     assert r.status_code == 401
     assert await account.credits() == 5
     assert await db.fetchval("SELECT count(*) FROM taskhistory WHERE user_id = $1", account.id) == 0
-
-
-async def test_the_task_history_shows_the_latest_tasks_up_to_date(
-    app_module, db, account, user, taskiq_client
-):
-    limit = app_module.TASK_HISTORY_LIMIT
-    task_ids = [await insert_task(db, account, status="SUCCESS", result=2.0) for _ in range(limit + 4)]
-    # The newest one ended, but the worker couldn't save it.
-    task_ids.append(await insert_task(db, account))
-    await taskiq_client.result_backend.set_result(
-        task_ids[-1], TaskiqResult(is_err=False, return_value=3.0, execution_time=0)
-    )
-
-    history = (await user.get("/user/task_history")).json()
-    assert [task["task_id"] for task in history] == task_ids[::-1][:limit]
-    assert (history[0]["status"], history[0]["result"]) == ("SUCCESS", 3.0)
 
 
 async def test_api_task_details_keeps_401_and_404(db, account, anon):

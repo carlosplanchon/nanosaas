@@ -47,8 +47,15 @@ def tailwind_cli() -> Path:
 
 
 if __name__ == "__main__":
+    # Not the minified scripts of other projects, like Alpine.js: Tailwind would
+    # take words of their code, like "transition", for classes.
+    scripts = sorted(
+        path.relative_to(REPO).as_posix()
+        for path in (REPO / "web" / "static").rglob("*.js")
+        if not path.name.endswith(".min.js")
+    )
     subprocess.run(
-        [tailwind_cli(), "--content", "web/templates/**/*.html,web/static/**/*.js", "-o", "web/static/tailwind.css", "--minify"],
+        [tailwind_cli(), "--content", ",".join(["web/templates/**/*.html", *scripts]), "-o", "web/static/tailwind.css", "--minify"],
         cwd=REPO,
         check=True,
         # Without it, the CLI suggests updating its browser list, which it can't do.

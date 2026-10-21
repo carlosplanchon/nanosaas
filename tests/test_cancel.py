@@ -31,12 +31,12 @@ async def test_a_queued_task_is_canceled_and_its_worker_skips_it(services, start
         task_id = (await user.post("/task/divide", json={"x": 6, "y": 3})).json()["id"]
         assert await account.credits() == 4
         # The panel shows a Cancel button until a worker starts it.
-        [task] = (await user.get("/user/task_history")).json()
+        [task] = (await user.get("/user/task_history")).json()["tasks"]
         assert (task["status"], task["started"]) == ("PENDING", False)
 
         r = await user.post(f"/task/cancel/{task_id}")
         assert (r.status_code, r.json()) == (200, {"id": task_id, "status": "CANCELED"})
-        [task] = (await user.get("/user/task_history")).json()
+        [task] = (await user.get("/user/task_history")).json()["tasks"]
         assert task["status"] == "CANCELED"
     assert await account.credits() == 5
 

@@ -140,7 +140,7 @@ Any Google account can log in, and each new account gets `INITIAL_CREDITS` credi
 
    ![User Panel](docs/user_panel.png)
 
-   It shows the latest 50 tasks (`TASK_HISTORY_LIMIT` in `main_api.py`), with a *Cancel* button on the pending ones that no worker started yet. It checks them every 5 seconds while one is pending, every 30 seconds otherwise, and not while its tab is hidden.
+   It shows the tasks 50 at a time (`TASK_HISTORY_LIMIT` in `main_api.py`), the latest first, with buttons to the older and the newer ones, and a *Cancel* button on the pending ones that no worker started yet. It checks the ones it shows every 5 seconds while one is pending, every 30 seconds otherwise, and not while its tab is hidden.
 
    At the bottom of the panel, users can delete their account, with its tasks and its API key: its sessions end on every device. All that's kept is a hash of its Google ID, so that logging in with it again starts an account without `INITIAL_CREDITS`: otherwise, deleting the account would be a way to get them again. The results of its tasks may stay in Redis for up to a day, until the result backend forgets them.
 
@@ -149,9 +149,10 @@ Any Google account can log in, and each new account gets `INITIAL_CREDITS` credi
     curl -H "X-API-Key: your_api_key" http://127.0.0.1:8000/api/user_credits
     curl -H "X-API-Key: your_api_key" -H "Content-Type: application/json" -d '{"x": 10, "y": 4}' http://127.0.0.1:8000/api/task/divide
     curl -H "X-API-Key: your_api_key" http://127.0.0.1:8000/api/task_details/your_task_id
+    curl -H "X-API-Key: your_api_key" http://127.0.0.1:8000/api/task_history
     curl -X POST -H "X-API-Key: your_api_key" http://127.0.0.1:8000/api/task/cancel/your_task_id
     ```
-   Wrong parameters get a 422 error, without spending a credit. A task that no worker started yet can be canceled, as the last line does: its credit comes back, and it stays in the history as `CANCELED`. One that started gets a 409 error. The API key also works in the `api_key` query parameter, for older clients, but avoid it: URLs end up in server and proxy logs. The interactive docs at `/docs` list every route, and under **tasks**, every task with its description and parameters, where you can also try them.
+   Wrong parameters get a 422 error, without spending a credit. `/api/task_history` lists the account's tasks, the latest first, 50 at a time, or up to 100 with the `limit` query parameter. While `has_more` is true there are older ones: get the next page with the `task_id` of the last task in the `before` query parameter. A task that no worker started yet can be canceled, as the last line does: its credit comes back, and it stays in the history as `CANCELED`. One that started gets a 409 error. The API key also works in the `api_key` query parameter, for older clients, but avoid it: URLs end up in server and proxy logs. The interactive docs at `/docs` list every route, and under **tasks**, every task with its description and parameters, where you can also try them.
 
    To retry a request safely, for example after a timeout, send it with an `Idempotency-Key` header, with a value you pick for each request, like a UUID. Sent again with the same key, the request gets the task it started, without paying for another one, and if it didn't start one, it starts it then. Reusing a key for another task or other parameters gets a 422 error. The panel does the same, so a double click starts one task.
 

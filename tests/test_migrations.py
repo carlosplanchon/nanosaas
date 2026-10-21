@@ -30,6 +30,15 @@ async def test_the_pending_tasks_are_found_by_an_index(db):
     assert indexdef is not None
 
 
+async def test_the_pages_of_the_history_are_found_by_an_index(db):
+    # Each one starts where the index has the account's last task of the one before.
+    indexdef = await db.fetchval(
+        "SELECT indexdef FROM pg_indexes WHERE tablename = 'taskhistory' "
+        "AND indexdef LIKE '%(user_id, created_at, id)'"
+    )
+    assert indexdef is not None
+
+
 async def test_the_migrations_match_the_models(app_module):
     async with TortoiseContext() as ctx:
         await ctx.init(config=app_module.TORTOISE_ORM)

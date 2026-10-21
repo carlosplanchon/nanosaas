@@ -152,6 +152,10 @@ class TaskHistory(Model):
 
     class Meta:
         unique_together = (("user", "idempotency_key"),)
+        # For the pages of an account's history, the latest tasks first: each
+        # one starts right after the last task of the one before. With the
+        # column of the account, which the migration takes as it is.
+        indexes = (("user_id", "created_at", "id"),)
 
     def __str__(self):
         return f"{self.task_type} - {self.task_id}"

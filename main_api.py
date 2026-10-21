@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 
 from pathlib import Path
 
-from fastapi import FastAPI, Depends, Header, HTTPException, Security, Request
+from fastapi import FastAPI, Depends, Header, HTTPException, Query, Security, Request
 
 from fastapi.responses import RedirectResponse
 from fastapi.responses import HTMLResponse
@@ -178,6 +178,25 @@ class TaskOut(BaseModel):
 class TaskInitOut(BaseModel):
     id: str
     message: str
+
+
+# A task of the history.
+class TaskHistoryItem(BaseModel):
+    task_id: str
+    task_type: str
+    parameters: dict[str, typing.Any]
+    status: str
+    result: typing.Any
+    created_at: datetime.datetime
+    # Until a worker starts it, a pending task can be canceled.
+    started: bool
+
+
+# A page of the history, the latest tasks first.
+class TaskHistoryOut(BaseModel):
+    tasks: list[TaskHistoryItem]
+    # Whether there are older tasks: the next page has them.
+    has_more: bool
 
 
 ###########################
@@ -449,33 +468,92 @@ async def get_user_credits_with_key(
     return {"credits": account.credits}
 
 
-# How many tasks the panel shows, the latest first.
+# How many tasks a page of the history has, the latest first, unless the
+# request asks for another number, up to TASK_HISTORY_MAX_LIMIT.
 TASK_HISTORY_LIMIT = 50
+TASK_HISTORY_MAX_LIMIT = 100
+
+# The query parameters that pick a page of the history.
+HistoryBefore = typing.Annotated[str | None, Query(
+    description="The task_id of the last task of the previous page: this page has the tasks before it."
+)]
+HistoryLimit = typing.Annotated[int, Query(
+    ge=1, le=TASK_HISTORY_MAX_LIMIT, description="How many tasks the page has, at most."
+)]
 
 
-@app.get("/user/task_history")
-async def task_history(user: OpenID = Depends(get_logged_user)):
-    """Retrieve the logged user's latest tasks."""
+async def task_history_page(account: Account, before: str | None, limit: int) -> TaskHistoryOut:
+    """
+    A page of the account's history, the latest tasks first: the first
+    one, or the one with the tasks before the task `before`, which the
+    previous page ends with. Shared by the routes for the panel and for
+    API keys. Its pending tasks are refreshed, as in the task details.
+
+    A page starts right after its `before` task, so the tasks started
+    meanwhile don't move it: they show up in the first page.
+    """
+    tasks = TaskHistory.filter(user=account)
+    if before:
+        last = await TaskHistory.get_or_none(task_id=before, user=account)
+        if last is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Task not found or you do not have permission to access it"
+            )
+        # Older than it, or as old with a lower id. The created_at__lte, which
+        # adds nothing to that, lets PostgreSQL start reading the history's
+        # index at it, instead of reading and skipping the newer tasks.
+        tasks = tasks.filter(
+            Q(created_at__lt=last.created_at) | Q(created_at=last.created_at, id__lt=last.id),
+            created_at__lte=last.created_at
+        )
+
+    # One more than the page: if it's there, there are more.
+    page = tasks.order_by("-created_at", "-id").limit(limit + 1)
+    await refresh_tasks(await page)
+
+    # Read it again, after the updates.
+    rows = await page
+    return TaskHistoryOut(
+        tasks=[
+            TaskHistoryItem(
+                task_id=task.task_id,
+                task_type=task.task_type,
+                parameters=task.parameters,
+                status=task.status,
+                result=task.result,
+                created_at=task.created_at,
+                started=task.started_at is not None
+            )
+            for task in rows[:limit]
+        ],
+        has_more=len(rows) > limit
+    )
+
+
+@app.get("/user/task_history", response_model=TaskHistoryOut)
+async def task_history(
+    before: HistoryBefore = None,
+    limit: HistoryLimit = TASK_HISTORY_LIMIT,
+    user: OpenID = Depends(get_logged_user)
+        ):
+    """Retrieve a page of the logged user's tasks, the latest first."""
     account = await Account.get(google_id=user.id)
-    latest = TaskHistory.filter(user=account).order_by("-created_at").limit(TASK_HISTORY_LIMIT)
-    await refresh_tasks(await latest)
+    return await task_history_page(account, before, limit)
 
-    # Refresh history after updates
-    history = await latest
-    return [
-        {
-            "id": task.id,
-            "task_id": task.task_id,
-            "task_type": task.task_type,
-            "parameters": task.parameters,
-            "status": task.status,
-            "result": task.result,
-            "created_at": task.created_at,
-            # Until a worker starts it, a pending task can be canceled.
-            "started": task.started_at is not None
-        }
-        for task in history
-    ]
+
+@app.get("/api/task_history", response_model=TaskHistoryOut)
+async def task_history_with_api_key(
+    before: HistoryBefore = None,
+    limit: HistoryLimit = TASK_HISTORY_LIMIT,
+    account: Account = Depends(get_api_key_account)
+        ):
+    """
+    List the account's tasks, the latest first, a page at a time. While
+    has_more is true, there are older ones: for the next page, send the
+    task_id of the last task of this one as before.
+    """
+    return await task_history_page(account, before, limit)
 
 
 @app.get("/user/api_key", response_model=dict)

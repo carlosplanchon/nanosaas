@@ -100,7 +100,7 @@
                         </tr>
                     </thead>
                     <tbody>
-                        <template x-for="task in tasks" :key="task.id">
+                        <template x-for="task in tasks" :key="task.task_id">
                             <tr class="hover:bg-gray-100">
                                 <td class="border p-2 text-center" x-text="task.task_id"></td>
                                 <td class="border p-2 text-center" x-text="task.task_type"></td>
@@ -121,6 +121,12 @@
                         </template>
                     </tbody>
                 </table>
+            </div>
+
+            <!-- The pages of the history -->
+            <div class="flex mt-4">
+                <button x-show="pages.length > 1" x-on:click="newerTasks()" class="text-blue-500 hover:underline">&larr; Newer tasks</button>
+                <button x-show="hasMore" x-on:click="olderTasks()" class="ml-auto text-blue-500 hover:underline">Older tasks &rarr;</button>
             </div>
         </div>
 
@@ -184,6 +190,10 @@
                 chosen: '',
                 values: {},
                 tasks: [],
+                // The page of the history shown, as the task its tasks come before (null
+                // for the first page), after the ones of the newer pages, to go back.
+                pages: [null],
+                hasMore: false, // Whether there are older tasks
                 credits: 0, // Initialize credits
                 // The task being started, and the Idempotency-Key it's sent with: sent
                 // again before an answer, after a double click or a network error, it
@@ -233,22 +243,39 @@
                     }
                 },
 
+                // The page shown, so a refresh shows the latest of its tasks.
                 async fetchTaskHistory() {
+                    const before = this.pages.at(-1);
+                    const query = before ? `?before=${encodeURIComponent(before)}` : '';
                     try {
-                        const response = await fetch('{{ root_prefix }}/user/task_history');
+                        const response = await fetch(`{{ root_prefix }}/user/task_history${query}`);
                         if (sessionExpired(response)) return;
+                        // Another page was chosen meanwhile: this one is not shown anymore.
+                        if (before !== this.pages.at(-1)) return;
                         if (response.ok) {
                             const data = await response.json();
-                            this.tasks = data.map(task => ({
+                            this.tasks = data.tasks.map(task => ({
                                 ...task,
                                 created_at: new Date(task.created_at).toLocaleString()
                             }));
+                            this.hasMore = data.has_more;
                         } else {
                             console.error('Failed to fetch task history');
                         }
                     } catch (error) {
                         console.error('Error fetching task history:', error);
                     }
+                },
+
+                // The tasks before the last one shown.
+                olderTasks() {
+                    this.pages.push(this.tasks.at(-1).task_id);
+                    this.refresh();
+                },
+
+                newerTasks() {
+                    this.pages.pop();
+                    this.refresh();
                 },
 
                 chosenTask() {
@@ -309,6 +336,8 @@
                         if (sessionExpired(response)) return;
 
                         if (response.ok) {
+                            // Back to the first page, which has the new task.
+                            this.pages = [null];
                             this.refresh(); // Refresh task history and credits after starting a new task
                         } else if (response.status === 403) {
                             alert('Not enough credits');
