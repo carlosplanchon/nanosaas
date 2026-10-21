@@ -197,7 +197,7 @@ It replaces the whole database, in a single transaction: if anything fails, the 
 
    Only one worker runs a task at a time. When Redis queues a task but its reply to the backend is lost, redis-py sends the task again, and when there's no reply at all, the backend gives the task up and its credits back, though Redis may have queued it. So the worker marks each task as started in the task history before running it, and skips the copies of a task that already started, and the tasks given up.
 
-   TaskIQ stops a task by cancelling it, which only works while the task awaits something. Blocking code, like `time.sleep()` or a long computation, can't be stopped, holds up the worker's other tasks, and keeps the worker from renewing the task's lease, so after `lease` seconds the task also runs in another worker: use async libraries, or run it with `await asyncio.to_thread(...)`. In a thread, the task fails at `time_limit`, but the thread keeps running until it ends.
+   TaskIQ stops a task by cancelling it, which only works while the task awaits something. Blocking code, like `time.sleep()` or a long computation, can't be stopped, holds up the worker's other tasks, stops its heartbeat (see Development Notes), and keeps the worker from renewing the task's lease, so after `lease` seconds the task also runs in another worker: use async libraries, or run it with `await asyncio.to_thread(...)`. In a thread, the task fails at `time_limit`, but the thread keeps running until it ends.
 6. Add your own tasks in `taskiq_task.py`. The included `divide` task simulates a long-running operation:
     ```python
     @broker.task(task_name="divide")
@@ -250,6 +250,7 @@ It replaces the whole database, in a single transaction: if anything fails, the 
 
 - To monitor tasks, read the worker's log: it shows each task it runs, and the errors, with their traceback, except a `TaskError`, which takes a line. With Docker, `docker compose logs -f worker`. The `taskhistory` table keeps every task's status and result.
 - `/health` answers 200 while the API can use PostgreSQL and Redis, and 503 when one of them doesn't answer within 2 seconds (`HEALTH_TIMEOUT` in `main_api.py`), down or hung: it says which one, and the API's log says why. The healthcheck of `compose.yaml` asks it every 30 seconds, so `docker compose ps` shows the API as unhealthy meanwhile. To hear about it, point an uptime monitor at `https://your-domain.com/health`.
+- The worker has a healthcheck too: each of its processes writes a heartbeat every 5 seconds while it can use PostgreSQL and Redis, and `scripts/worker_healthcheck.py` fails when one of them is more than 30 seconds old. A task with blocking code stops it too, since it holds the event loop of its process (see step 5 of Usage). `docker compose ps` shows the worker as unhealthy meanwhile, and its log says when PostgreSQL or Redis stops answering.
 - The database changes are migrations in `web/migrations/`, made with Tortoise ORM's own tool. The backend applies the new ones when it starts, and records them in the `tortoise_migrations` table. After changing the models in `web/db_models.py`, create a migration from the repository root, with the virtual environment activated (it reads `config.toml`, but doesn't connect to the database):
     ```bash
     tortoise -c shared.TORTOISE_ORM makemigrations

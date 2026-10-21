@@ -81,6 +81,13 @@ services:
   worker:
     <<: *app
     command: taskiq worker taskiq_task:broker --receiver taskiq_task:Receiver
+    healthcheck:
+      # Each of its processes writes a heartbeat every 5 seconds, while it can use
+      # PostgreSQL and Redis and no task blocks it: see scripts/worker_healthcheck.py.
+      test: ["CMD", "python", "scripts/worker_healthcheck.py"]
+      interval: 30s
+      start_period: 60s
+      start_interval: 1s
 
   # Only with --profile https: serves the app over HTTPS, on the ports 80 and 443 of the server.
   caddy:

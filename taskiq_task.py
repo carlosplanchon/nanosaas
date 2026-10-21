@@ -22,7 +22,10 @@ import asyncio
 import datetime
 import inspect
 import logging
+import multiprocessing
+import tempfile
 import time
+from pathlib import Path
 
 
 # TaskIQ's, which the API's log lines use too: with their time, logger and level.
@@ -122,6 +125,51 @@ async def renew_lease(task_id: str, started_at: datetime.datetime) -> None:
         except Exception as e:
             # The next one may get through: the lease lasts LEASE seconds.
             logger.warning("Can't renew the lease of task %s: %s", task_id, e)
+
+
+async def ping_postgres() -> None:
+    await Tortoise.get_connection("default").execute_query("SELECT 1")
+
+
+async def ping_redis() -> None:
+    """The broker's Redis, which queues the tasks, and the result backend's, if it's another."""
+    for pool in (broker.connection_pool, broker.result_backend.redis_pool):
+        async with Redis(connection_pool=pool) as redis:
+            await redis.ping()
+
+
+# Every HEARTBEAT seconds, each worker process writes the time to its heartbeat
+# file, in the temporary directory, while it can use PostgreSQL and Redis:
+# scripts/worker_healthcheck.py, the worker's healthcheck, reads them.
+HEARTBEAT = 5
+
+
+def heartbeat_file() -> Path:
+    """This process's, named after it, like nanosaas-heartbeat-worker-0."""
+    return Path(tempfile.gettempdir()) / f"nanosaas-heartbeat-{multiprocessing.current_process().name}"
+
+
+async def beat() -> None:
+    """
+    Write this process's heartbeat every HEARTBEAT seconds, after PostgreSQL
+    and Redis answer, within 2 seconds each. It runs in the event loop of
+    the tasks, so a task with blocking code stops it too.
+    """
+    path = heartbeat_file()
+    beating = True
+    while True:
+        try:
+            await asyncio.wait_for(asyncio.gather(ping_postgres(), ping_redis()), 2)
+            path.write_text(f"{time.time()}\n")
+            if not beating:
+                logger.info("Heartbeat: PostgreSQL and Redis answer again.")
+            beating = True
+        except Exception as e:
+            # Once, not every few seconds.
+            if beating:
+                logger.warning("Heartbeat stopped: PostgreSQL or Redis doesn't answer: %r", e)
+            beating = False
+        await asyncio.sleep(HEARTBEAT)
 
 
 async def requeue_lost_tasks() -> None:
@@ -258,11 +306,13 @@ async def startup(state: TaskiqState):
     logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
     state.tortoise = await Tortoise.init(config=TORTOISE_ORM)
     state.requeuing = asyncio.create_task(requeue_lost_tasks())
+    state.beating = asyncio.create_task(beat())
 
 
 @broker.on_event(TaskiqEvents.WORKER_SHUTDOWN)
 async def shutdown(state: TaskiqState):
     state.requeuing.cancel()
+    state.beating.cancel()
     await state.tortoise.close_connections()
 
 

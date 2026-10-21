@@ -60,11 +60,9 @@ from pydantic import BaseModel, ConfigDict, Field, create_model
 from taskiq import AsyncTaskiqDecoratedTask
 from taskiq_redis.exceptions import ResultIsMissingError
 
-from redis.asyncio import Redis
-
 from taskiq_task import broker
 from taskiq_task import ATTEMPTS, LEASE, QUEUE_TIMEOUT, TIME_LIMIT
-from taskiq_task import LOG_FORMAT, TaskLost, queue_task
+from taskiq_task import LOG_FORMAT, TaskLost, ping_postgres, ping_redis, queue_task
 
 from web.db_models import Account, DeletedAccount, TaskHistory
 
@@ -1198,17 +1196,6 @@ async def answers(name: str, ping: typing.Callable[[], typing.Awaitable]) -> boo
         logger.warning("Health check: %s doesn't answer: %r", name, task.exception())
         return False
     return True
-
-
-async def ping_postgres() -> None:
-    await Tortoise.get_connection("default").execute_query("SELECT 1")
-
-
-async def ping_redis() -> None:
-    """The broker's Redis, which queues the tasks, and the result backend's, if it's another."""
-    for pool in (broker.connection_pool, broker.result_backend.redis_pool):
-        async with Redis(connection_pool=pool) as redis:
-            await redis.ping()
 
 
 @app.get("/health", include_in_schema=False)

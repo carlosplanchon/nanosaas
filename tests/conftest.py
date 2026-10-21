@@ -112,10 +112,10 @@ def free_port():
 class Process:
     """A process started from the repository root, reading the given config."""
 
-    def __init__(self, args, config, log, is_ready, timeout=60):
+    def __init__(self, args, config, log, is_ready, timeout=60, env=None):
         self.log = log
         # Unbuffered, so the logs are complete when a test reads them.
-        env = {**os.environ, "NANOSAAS_CONFIG": str(config), "PYTHONUNBUFFERED": "1"}
+        env = {**os.environ, "NANOSAAS_CONFIG": str(config), "PYTHONUNBUFFERED": "1", **(env or {})}
         with log.open("w") as out:
             # Its own session, so stop() also reaches the worker's pool.
             self.proc = subprocess.Popen(
@@ -198,21 +198,30 @@ def start_server(tmp_path_factory, services):
 
 
 def run_worker(server):
-    """A TaskIQ worker with the server's config, plus the test-only tasks."""
+    """
+    A TaskIQ worker with the server's config, plus the test-only tasks, and a
+    temporary directory of its own, `heartbeats`, where its process writes them.
+    """
     name = f"test-{uuid.uuid4().hex[:8]}"
     log = server.config.parent / f"worker-{name}.log"
+    heartbeats = server.config.parent / f"tmp-{name}"
+    heartbeats.mkdir()
     args = [
         sys.executable, "-m", "taskiq", "worker", "tests.worker_app:broker",
         "--receiver", "taskiq_task:Receiver", "--workers", "1",
     ]
-    return Process(args, server.config, log, lambda: "Listening started." in log.read_text())
+    process = Process(
+        args, server.config, log, lambda: "Listening started." in log.read_text(), env={"TMPDIR": str(heartbeats)}
+    )
+    process.heartbeats = heartbeats
+    return process
 
 
 @pytest.fixture(scope="session")
 def worker(server):
     """The API's worker."""
     process = run_worker(server)
-    yield
+    yield process
     process.stop()
 
 

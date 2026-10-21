@@ -2,9 +2,10 @@
 TaskIQ broker for the tests' worker: the app's tasks, plus one that always
 raises, to test what happens to a task that fails with an exception, one
 more to start through start_task(), one with a parameter of each kind, for
-the panel's inputs, one that returns the IDs the worker gives it, and one
-that costs 3 credits.
+the panel's inputs, one that returns the IDs the worker gives it, one
+that costs 3 credits, and one with blocking code.
 """
+import time
 from enum import Enum
 from typing import Literal
 
@@ -30,6 +31,12 @@ async def costly(fail: bool, user_id: str):
     if fail:
         raise TaskError("It failed, as asked.")
     return "done"
+
+
+@broker.task(task_name="block")
+async def block(seconds: float, user_id: str):
+    """Hold the worker's event loop, as blocking code does in an async task."""
+    time.sleep(seconds)
 
 
 @broker.task(task_name="ids")

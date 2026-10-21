@@ -1,9 +1,11 @@
 """Helpers shared by the tests."""
 import asyncio
+import contextlib
 import datetime
 import hashlib
 import json
 import secrets
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -166,3 +168,68 @@ async def wait_for_log(log, text, timeout=30):
 def cookie_attributes(set_cookie):
     """A Set-Cookie header's attributes, without the value: {"httponly", "secure", ...}."""
     return {part.strip().lower() for part in set_cookie.split(";")[1:]}
+
+
+class Proxy:
+    """
+    A TCP proxy to a server, on a thread of its own, which the test can make
+    stop answering, like a server that hangs, or close, like one that's down.
+    """
+
+    def __init__(self, host, port):
+        self.server_address = (host, port)
+        self.hung = False
+        self.writers = set()
+        self.relays = set()
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
+        self.thread.start()
+        self.server = self.run(asyncio.start_server(self.relay, "127.0.0.1", 0))
+        self.address = ("127.0.0.1", self.server.sockets[0].getsockname()[1])
+
+    def run(self, coroutine):
+        return asyncio.run_coroutine_threadsafe(coroutine, self.loop).result()
+
+    async def relay(self, client_reader, client_writer):
+        self.relays.add(asyncio.current_task())
+        server_reader, server_writer = await asyncio.open_connection(*self.server_address)
+        self.writers |= {client_writer, server_writer}
+
+        async def pipe(reader, writer):
+            with contextlib.suppress(ConnectionError):
+                while data := await reader.read(65536):
+                    while self.hung:
+                        await asyncio.sleep(0.1)
+                    writer.write(data)
+                    await writer.drain()
+            writer.close()
+
+        await asyncio.gather(pipe(client_reader, server_writer), pipe(server_reader, client_writer))
+
+    def hang(self):
+        """What goes through it doesn't arrive: the server seems to hang."""
+        self.hung = True
+
+    def close(self):
+        """Its connections end, and new ones are refused: the server seems down."""
+        async def close():
+            self.server.close()
+            for writer in self.writers:
+                writer.close()
+
+        # The relays it held end too.
+        self.hung = False
+        self.run(close())
+
+    def stop(self):
+        self.close()
+
+        async def relays_ended():
+            pending = {relay for relay in self.relays if not relay.done()}
+            if pending:
+                await asyncio.wait(pending, timeout=5)
+
+        self.run(relays_ended())
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self.thread.join()
+        self.loop.close()
