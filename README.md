@@ -66,7 +66,7 @@ I built the first version in three days, with almost no prior knowledge of web d
     docker compose up --build
     ```
     It runs PostgreSQL, Redis, the backend and a TaskIQ worker, and serves the app at `http://127.0.0.1:8000`, only to this machine. Add `-d` to run it in the background.
-    - After changing the code, run the same command again. After changing `config.toml`, run `docker compose restart api worker`.
+    - After changing the code, run the same command again. After changing `config.toml`, run `docker compose restart api worker`. Either way, the worker takes no more tasks, and gives the ones it's running a minute to end before it restarts: it stops the others, and queues them again right away, to run from the start. If your tasks take longer, raise `--wait-tasks-timeout` in `compose.yaml`, and `stop_grace_period` with it.
     - The backend creates the tables the first time, and applies new migrations whenever it starts (see the Development Notes).
     - The data is kept in Docker volumes, so it survives restarts. `docker compose down -v` deletes it.
 
@@ -104,9 +104,9 @@ Requires Python 3.11 or newer, PostgreSQL and Redis 6 or newer.
 
 4. Start the TaskIQ worker in another terminal, with the virtual environment activated:
     ```bash
-    taskiq worker taskiq_task:broker --receiver taskiq_task:Receiver
+    taskiq worker taskiq_task:broker --receiver taskiq_task:Receiver --wait-tasks-timeout 60
     ```
-    `--receiver` makes it run one copy of each task at a time, renewing its lease while it runs, and drop the tasks that waited in the queue longer than `queue_timeout`.
+    `--receiver` makes it run one copy of each task at a time, renewing its lease while it runs, and drop the tasks that waited in the queue longer than `queue_timeout`. When you stop it, as with Ctrl+C, `--wait-tasks-timeout` gives the tasks it's running a minute to end: it stops the others, and queues them again.
 
 Run both commands from the repository root: `config.toml`, the templates and the static files are loaded from the current directory.
 
@@ -193,7 +193,7 @@ It replaces the whole database, in a single transaction: if anything fails, the 
 
    An account can have up to `MAX_PENDING_TASKS` pending tasks at a time, waiting in the queue or running (10 by default, set in `config.toml`): starting one more gets a 429 error, until one of them ends or is canceled. The workers take the tasks in the order they were queued, so without a limit, an account with many credits could fill the queue: the other users' tasks would wait behind its tasks, and fail as `TaskExpired`. Raise it if your users start tasks in batches, and you have the workers for them.
 
-   A task whose worker dies runs again, in another worker. While a worker runs a task, it renews the task's lease every few seconds, and the workers queue again the tasks whose lease went `lease` seconds (30 by default) without renewal, up to `attempts` runs in all (3 by default): after the last one, the task fails as `TaskLost`, and its credits come back. A task runs again from the start, so make the tasks that change things outside NanoSaaS safe to run twice: for example, with their `task_id` as the idempotency key of the services they call (see below). A task that never ends otherwise, for example because Redis lost it, also fails as `TaskLost`: one that never started, once it could have waited in the queue (`queue_timeout` and one more minute), and one that did, once each of its runs could have waited in the queue and run until stopped (about an hour by default).
+   A task whose worker dies runs again, in another worker. While a worker runs a task, it renews the task's lease every few seconds, and the workers queue again the tasks whose lease went `lease` seconds (30 by default) without renewal, up to `attempts` runs in all (3 by default): after the last one, the task fails as `TaskLost`, and its credits come back. A worker told to stop, as in a deploy, takes no more tasks, and gives the ones it's running a minute to end (`--wait-tasks-timeout`, in `compose.yaml`): it stops the others, and queues them again right away: the run it stopped counts as one of their `attempts`. A task runs again from the start, so make the tasks that change things outside NanoSaaS safe to run twice: for example, with their `task_id` as the idempotency key of the services they call (see below). A task that never ends otherwise, for example because Redis lost it, also fails as `TaskLost`: one that never started, once it could have waited in the queue (`queue_timeout` and one more minute), and one that did, once each of its runs could have waited in the queue and run until stopped (about an hour by default).
 
    Only one worker runs a task at a time. When Redis queues a task but its reply to the backend is lost, redis-py sends the task again, and when there's no reply at all, the backend gives the task up and its credits back, though Redis may have queued it. So the worker marks each task as started in the task history before running it, and skips the copies of a task that already started, and the tasks given up.
 
@@ -220,9 +220,9 @@ It replaces the whole database, in a single transaction: if anything fails, the 
 
    A task costs 1 credit, unless it says otherwise with a `cost` label: `@broker.task(task_name="square", cost=2)`. The panel shows it with the task's description, and `/docs` with the route's. Each task keeps in its history row what it cost when it started, and that's what it gives back if it fails, is canceled or gets lost, even if you change its cost meanwhile. The app doesn't start with a cost that isn't a whole number, 1 or more.
 
-   The tasks can use the database through the models in `web/db_models.py`: the worker connects to it when it starts. When a task ends, the worker saves its status and result in the task history. If the task raises an exception, it ends as FAILURE and its credits are given back. Only the exception's type is saved, since its message may expose details of your servers: to tell the user why the task failed, raise `TaskError` with a message, as `divide` does, and the message is saved too. Don't catch an error to return it as the result instead: the task would end as SUCCESS, and be charged. If your tasks take longer than 10 minutes, raise `time_limit`.
+   The tasks can use the database through the models in `web/db_models.py`: the worker connects to it when it starts. When a task ends, the worker saves its status and result in the task history. If the task raises an exception, it ends as FAILURE and its credits are given back. Only the exception's type is saved, since its message may expose details of your servers: to tell the user why the task failed, raise `TaskError` with a message, as `divide` does, and the message is saved too. Don't catch an error to return it as the result instead: the task would end as SUCCESS, and be charged. If your tasks take longer than 10 minutes, raise `time_limit`, and if they take longer than a minute, `--wait-tasks-timeout`, so a deploy doesn't stop them (see step 5).
 
-   A task whose worker dies runs again from the start, so if it changes things outside NanoSaaS, pass its `task_id` to the services it calls as their idempotency key, where they take one: they do it once, however many times the task runs. For example, with [httpx](https://www.python-httpx.org/):
+   A task whose worker dies, or stops it, runs again from the start, so if it changes things outside NanoSaaS, pass its `task_id` to the services it calls as their idempotency key, where they take one: they do it once, however many times the task runs. For example, with [httpx](https://www.python-httpx.org/):
     ```python
     @broker.task(task_name="send_message")
     async def send_message(to: str, text: str, user_id: str, task_id: str):
@@ -288,7 +288,7 @@ GitHub Actions runs them with Python 3.11 and 3.15 on every push to `main` and o
 
 ## Known Limitations
 
-- A task whose worker dies in the middle of it runs again from the start, so a task that changes things outside NanoSaaS, like sending an email, may do it twice, unless the service it calls takes its `task_id` as an idempotency key.
+- A task whose worker dies in the middle of it, or stops it in a deploy, after a minute, runs again from the start, so a task that changes things outside NanoSaaS, like sending an email, may do it twice, unless the service it calls takes its `task_id` as an idempotency key.
 - There are no payments: users get `INITIAL_CREDITS` the first time they log in, and more only when you add them, from the admin page or with `scripts/add_credits.py`.
 
 ---

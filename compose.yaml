@@ -80,7 +80,11 @@ services:
 
   worker:
     <<: *app
-    command: taskiq worker taskiq_task:broker --receiver taskiq_task:Receiver
+    # Told to stop, as in a deploy, it takes no more tasks, and gives the ones it's
+    # running a minute to end: it stops the others, and queues them again right away.
+    command: taskiq worker taskiq_task:broker --receiver taskiq_task:Receiver --wait-tasks-timeout 60
+    # Docker kills it after this: the minute, and the time to queue those tasks again.
+    stop_grace_period: 90s
     healthcheck:
       # Each of its processes writes a heartbeat every 5 seconds, while it can use
       # PostgreSQL and Redis and no task blocks it: see scripts/worker_healthcheck.py.

@@ -105,6 +105,17 @@ async def insert_task(db, account, status="PENDING", result=None, cost=1):
     return task_id
 
 
+async def start_divide(server, account):
+    """Start a divide, which takes 5 seconds, from the account's panel: its task ID."""
+    async with client_for(server, account.cookie) as user:
+        return (await user.post("/task/divide", json={"x": 6, "y": 3})).json()["id"]
+
+
+async def attempts(db, task_id):
+    """How many times a worker started the task."""
+    return await db.fetchval("SELECT attempts FROM taskhistory WHERE task_id = $1", task_id)
+
+
 async def age_task(db, task_id, age):
     """Move a task's creation back, as if it had been queued `age` ago."""
     await db.execute(
@@ -209,6 +220,10 @@ class Proxy:
     def hang(self):
         """What goes through it doesn't arrive: the server seems to hang."""
         self.hung = True
+
+    def resume(self):
+        """What it held arrives, and so does the rest."""
+        self.hung = False
 
     def close(self):
         """Its connections end, and new ones are refused: the server seems down."""

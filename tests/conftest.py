@@ -197,10 +197,11 @@ def start_server(tmp_path_factory, services):
         process.stop()
 
 
-def run_worker(server):
+def run_worker(server, *options):
     """
     A TaskIQ worker with the server's config, plus the test-only tasks, and a
     temporary directory of its own, `heartbeats`, where its process writes them.
+    options: more of its command-line options, like "--wait-tasks-timeout", "1".
     """
     name = f"test-{uuid.uuid4().hex[:8]}"
     log = server.config.parent / f"worker-{name}.log"
@@ -208,7 +209,7 @@ def run_worker(server):
     heartbeats.mkdir()
     args = [
         sys.executable, "-m", "taskiq", "worker", "tests.worker_app:broker",
-        "--receiver", "taskiq_task:Receiver", "--workers", "1",
+        "--receiver", "taskiq_task:Receiver", "--workers", "1", *options,
     ]
     process = Process(
         args, server.config, log, lambda: "Listening started." in log.read_text(), env={"TMPDIR": str(heartbeats)}
@@ -230,8 +231,8 @@ def start_worker():
     """Starts workers for a server, which the test can kill, and stops them after it."""
     processes = []
 
-    def start(server):
-        processes.append(run_worker(server))
+    def start(server, *options):
+        processes.append(run_worker(server, *options))
         return processes[-1]
 
     yield start
@@ -316,6 +317,12 @@ async def retry_db(services, retry_server):
     conn = await asyncpg.connect(services.dsn.rsplit("/", 1)[0] + "/retry")
     yield conn
     await conn.close()
+
+
+@pytest.fixture
+async def retry_account(retry_db):
+    """An account in the database of retry_server."""
+    return await create_account(retry_db)
 
 
 @pytest.fixture(scope="session")

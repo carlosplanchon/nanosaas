@@ -14,7 +14,7 @@ from taskiq.serializers import JSONSerializer
 from taskiq_redis import RedisAsyncResultBackend
 
 from tests.helpers import (
-    age_task, client_for, create_account, insert_task, task_row, wait_for_log, wait_for_row, wait_until_done
+    age_task, attempts, client_for, insert_task, start_divide, task_row, wait_for_log, wait_for_row, wait_until_done
 )
 
 pytestmark = pytest.mark.anyio
@@ -35,21 +35,6 @@ async def mark_started(db, task_id):
         "WHERE task_id = $1",
         task_id,
     )
-
-
-@pytest.fixture
-async def retry_account(retry_db):
-    """An account in the database of retry_server."""
-    return await create_account(retry_db)
-
-
-async def attempts(db, task_id):
-    return await db.fetchval("SELECT attempts FROM taskhistory WHERE task_id = $1", task_id)
-
-
-async def start_divide(server, account):
-    async with client_for(server, account.cookie) as user:
-        return (await user.post("/task/divide", json={"x": 6, "y": 3})).json()["id"]
 
 
 async def kill_while_running(worker, task_id):

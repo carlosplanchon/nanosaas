@@ -200,15 +200,17 @@ class TaskHistory(Model):
         return updated == 1
 
     @classmethod
-    async def release(cls, task_id: str, started_at: datetime.datetime) -> bool:
+    async def release(cls, task_id: str, started_at: datetime.datetime, expired: bool = True) -> bool:
         """
         Release a task from its run that started at started_at, if its
         lease expired, so that it starts again when it's queued again.
+        Without expired, the worker that stopped that run releases it.
         Returns False if that run ended, renewed its lease meanwhile, or
         another worker released it.
         """
+        lease = {"lease_until__lt": timezone.now()} if expired else {}
         updated = await cls.filter(
-            task_id=task_id, status="PENDING", started_at=started_at, lease_until__lt=timezone.now()
+            task_id=task_id, status="PENDING", started_at=started_at, **lease
         ).update(started_at=None)
         return updated == 1
 

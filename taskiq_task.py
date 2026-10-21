@@ -56,7 +56,10 @@ class TaskExpired(Exception):
 
 
 class TaskLost(Exception):
-    """A task that didn't end: its worker died in each of its runs, or the broker lost it."""
+    """
+    A task that didn't end: its worker died, or stopped before it ended, in
+    each of its runs, or the broker lost it.
+    """
 
 
 class SaveFinishedTasks(TaskiqMiddleware):
@@ -83,17 +86,36 @@ class Broker(ListQueueBroker):
     it, and keeps waiting when Redis restarts.
     """
 
+    async def pop(self) -> bytes | None:
+        """The next task in the queue, or None after a second without one."""
+        try:
+            async with Redis(connection_pool=self.connection_pool) as redis:
+                popped = await redis.brpop([self.queue_name], timeout=1)
+        except RedisError as e:
+            logger.warning("Can't get tasks from Redis, trying again in a second: %s", e)
+            await asyncio.sleep(1)
+            return None
+        return popped[1] if popped else None
+
     async def listen(self):
         while True:
+            # A worker told to stop cancels this. Cancelled, the BRPOP would lose
+            # a task that Redis took from the queue for it, whose reply is on its
+            # way: instead, this waits for the reply, and hands that task over to
+            # TaskIQ, which runs it before the worker stops.
+            popping = asyncio.create_task(self.pop())
             try:
-                async with Redis(connection_pool=self.connection_pool) as redis:
-                    popped = await redis.brpop([self.queue_name], timeout=1)
-            except RedisError as e:
-                logger.warning("Can't get tasks from Redis, trying again in a second: %s", e)
-                await asyncio.sleep(1)
-                continue
-            if popped:
-                yield popped[1]
+                message = await asyncio.shield(popping)
+            except asyncio.CancelledError:
+                # Within the BRPOP's second, or a few more: a Redis that hangs doesn't answer.
+                try:
+                    message = await asyncio.wait_for(popping, 5)
+                except TimeoutError:
+                    message = None
+                if message is None:
+                    raise
+            if message is not None:
+                yield message
 
 
 broker = Broker(CONFIG["taskiq"]["broker"], **REDIS_OPTIONS).with_result_backend(
@@ -195,11 +217,12 @@ async def requeue_lost_tasks() -> None:
                 logger.error("Can't queue task %s again: %s", task.task_id, e)
 
 
-async def requeue(task: TaskHistory) -> None:
+async def requeue(task: TaskHistory, stopped: bool = False) -> None:
     """
-    Queue again a task that lost its worker, or fail it as TaskLost once
-    it ran ATTEMPTS times. A task that ended, but whose worker couldn't
-    save it, is saved from the result backend instead.
+    Queue again a task that lost its worker, or, with stopped, whose worker
+    stopped it, or fail it as TaskLost once it ran ATTEMPTS times. A task
+    that ended, but whose worker couldn't save it, is saved from the result
+    backend instead.
     """
     if broker.find_task(task.task_type) is None:
         # A worker with other tasks, like one from before a deploy: one that has it queues it.
@@ -213,20 +236,62 @@ async def requeue(task: TaskHistory) -> None:
         return
     if task.attempts >= ATTEMPTS:
         if await TaskHistory.finish(task.task_id, error=TaskLost()):
-            logger.error("Task %s lost its worker in each of its %d runs: failed.", task.task_id, task.attempts)
-    elif await TaskHistory.release(task.task_id, task.started_at):
+            if stopped:
+                logger.error(
+                    "Task %s didn't end before its worker stopped, in the last of its %d runs: failed.",
+                    task.task_id, task.attempts,
+                )
+            else:
+                logger.error("Task %s lost its worker in each of its %d runs: failed.", task.task_id, task.attempts)
+    elif await TaskHistory.release(task.task_id, task.started_at, expired=not stopped):
         await queue_task(task.task_type, task.task_id, task.parameters, task.user.google_id)
-        logger.warning(
-            "Task %s lost its worker: queued again, after %d of %d runs.", task.task_id, task.attempts, ATTEMPTS
-        )
+        why = "didn't end before its worker stopped" if stopped else "lost its worker"
+        logger.warning("Task %s %s: queued again, after %d of %d runs.", task.task_id, why, task.attempts, ATTEMPTS)
+
+
+async def requeue_stopped(task_id: str, started_at: datetime.datetime) -> None:
+    """requeue() a task whose worker stopped its run that started at started_at."""
+    task = await TaskHistory.get_or_none(
+        task_id=task_id, status="PENDING", started_at=started_at
+    ).prefetch_related("user")
+    if task is not None:
+        await requeue(task, stopped=True)
+
+
+# Seconds a stopping worker gives the tasks it stops to be queued again (see Receiver.listen()).
+STOP_TIMEOUT = 10
 
 
 class Receiver(BaseReceiver):
     """
     The worker's receiver: it runs only one copy of a pending task at a
-    time, renewing its lease while it runs, and drops the tasks that
-    waited in the queue too long.
+    time, renewing its lease while it runs, drops the tasks that waited in
+    the queue too long, and, when the worker stops, queues again the ones
+    that didn't end in time.
     """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # The asyncio task running each task, by the task's ID, and the IDs of the ones it stopped.
+        self.running: dict[str, asyncio.Task] = {}
+        self.stopped: set[str] = set()
+
+    async def listen(self, finish_event):
+        """
+        Run tasks until the worker is told to stop. Then TaskIQ takes no more,
+        and waits for the running ones to end, for up to --wait-tasks-timeout
+        seconds: this stops the others, which run_task() queues again, within
+        STOP_TIMEOUT seconds. One that doesn't stop by then is queued again
+        when its lease expires, as if its worker died.
+        """
+        await super().listen(finish_event)
+        if self.running:
+            logger.warning("Stopping the %d tasks that didn't end in time, to queue them again.", len(self.running))
+            self.stopped.update(self.running)
+            stopping = list(self.running.values())
+            for task in stopping:
+                task.cancel()
+            await asyncio.wait(stopping, timeout=STOP_TIMEOUT)
 
     @staticmethod
     def skipped(message) -> TaskiqResult:
@@ -275,10 +340,23 @@ class Receiver(BaseReceiver):
             message.kwargs["task_id"] = message.task_id
 
         renewing = asyncio.create_task(renew_lease(message.task_id, started_at))
+        self.running[message.task_id] = asyncio.current_task()
         try:
             result = await super().run_task(target, message, ack_controller)
         finally:
             renewing.cancel()
+            del self.running[message.task_id]
+        if message.task_id in self.stopped:
+            # listen() cancelled it, and TaskIQ caught the CancelledError: handled here,
+            # so the cancellation doesn't linger for what this asyncio task does next.
+            asyncio.current_task().uncancel()
+            if isinstance(result.error, asyncio.CancelledError):
+                try:
+                    await requeue_stopped(message.task_id, started_at)
+                except Exception as e:
+                    # Its lease expires, and then a worker queues it again.
+                    logger.error("Can't queue task %s again: %s", message.task_id, e)
+                return self.skipped(message)
         if isinstance(result.error, TaskError):
             # Instead of the traceback that HideTaskErrors keeps out.
             logger.info("Task %s failed with a TaskError: %s", message.task_id, result.error)
@@ -289,11 +367,13 @@ class HideTaskErrors(logging.Filter):
     """
     Keeps out of the log TaskIQ's record of a task that raised a TaskError,
     with its traceback: the task failed on purpose, with a message for the
-    user, and the Receiver logs it in a line.
+    user, and the Receiver logs it in a line. Also the one of a task that the
+    Receiver stopped, with a CancelledError, as the worker stopped: it logs
+    that it queued it again.
     """
 
     def filter(self, record):
-        return not (record.exc_info and isinstance(record.exc_info[1], TaskError))
+        return not (record.exc_info and isinstance(record.exc_info[1], (TaskError, asyncio.CancelledError)))
 
 
 # The logger of TaskIQ's receiver, which logs the tasks' exceptions.
