@@ -15,6 +15,8 @@ import logging
 
 import secrets
 
+import sys
+
 import typing
 
 import uuid
@@ -69,6 +71,7 @@ from web.db_models import Account, CreditMovement, DeletedAccount, TaskHistory, 
 from webhooks import Undeliverable, check_url, new_secret
 
 from shared import CONFIG
+from shared import CONFIG_PATH
 from shared import TORTOISE_ORM
 
 
@@ -93,8 +96,9 @@ else:
 # users start tasks only once you give them credits (scripts/add_credits.py).
 INITIAL_CREDITS: int = CONFIG["app"].get("INITIAL_CREDITS", 25)
 
-# The emails of the users who can open the admin page, /admin. Google only
-# logs in users with their email verified (fastapi-sso checks it).
+# The emails of the users who can open the admin page, /admin: their accounts'
+# emails, which Google gave when each account was created (see is_admin()).
+# Google only logs in users with their email verified (fastapi-sso checks it).
 ADMINS: set[str] = {email.lower() for email in CONFIG["app"].get("ADMINS", [])}
 
 # The most tasks an account can have pending, waiting in the queue or running.
@@ -123,9 +127,13 @@ async def lifespan(app: FastAPI):
             await broker.shutdown()
 
 
+# NanoSaaS's version: that of its release, tagged like v1.0.0. /docs shows it.
+VERSION = "1.0.0"
+
 app = FastAPI(
     root_path=root_prefix,
     title="NanoSaaS",
+    version=VERSION,
     lifespan=lifespan,
     exception_handlers=tortoise_exception_handlers()
 )
@@ -255,8 +263,15 @@ def static_url(name: str) -> str:
 templates.env.globals["static_url"] = static_url
 
 
-# used to sign JWTs, make sure it is really secret.
+# Signs the sessions' JWTs: whoever knows it can sign a session of any user.
+# HS256 needs a key of 32 bytes or more (RFC 7518, section 3.2), and PyJWT only
+# warns about a shorter one, like the template's "...": the API doesn't start.
 JWT_SIGNING_SECRET_KEY = CONFIG["api"]["JWT_SIGNING_SECRET_KEY"]
+if len(JWT_SIGNING_SECRET_KEY) < 32:
+    sys.exit(
+        f"JWT_SIGNING_SECRET_KEY, in {CONFIG_PATH}, has {len(JWT_SIGNING_SECRET_KEY)} characters: "
+        "it needs at least 32. Make one with: python3 scripts/generate_jwt_secret_key.py"
+    )
 GOOGLE_CLIENT_ID = CONFIG["api"]["GOOGLE_CLIENT_ID"]
 GOOGLE_CLIENT_SECRET = CONFIG["api"]["GOOGLE_CLIENT_SECRET"]
 GOOGLE_REDIRECT_URI = CONFIG["api"]["GOOGLE_REDIRECT_URI"]
@@ -387,8 +402,15 @@ async def redirect_to_login(request: Request, exc: LoginRequired):
     return RedirectResponse(url=f"{root_prefix}/")
 
 
-def is_admin(user: OpenID) -> bool:
-    return (user.email or "").lower() in ADMINS
+async def is_admin(user: OpenID) -> bool:
+    """
+    Whether the user's account has an email of ADMINS: the account's, which
+    Google gave when it was created, and not the session's. Whoever got
+    JWT_SIGNING_SECRET_KEY could sign a session of their account with an
+    admin's email, but one of an admin's account needs its Google ID.
+    """
+    account = await Account.get_or_none(google_id=user.id)
+    return account is not None and account.email.lower() in ADMINS
 
 
 async def get_admin(
@@ -402,7 +424,7 @@ async def get_admin(
         user = await get_logged_user(cookie) if cookie is not None else None
     except HTTPException:
         user = None
-    if user is None or not is_admin(user):
+    if user is None or not await is_admin(user):
         raise HTTPException(status_code=404, detail="Not Found")
     return user
 
@@ -931,7 +953,7 @@ async def serve_page(
         request, "user_panel.html", {
             "root_prefix": root_prefix,
             # Admins get a button to the admin page.
-            "is_admin": is_admin(user)
+            "is_admin": await is_admin(user)
         }
     )
 

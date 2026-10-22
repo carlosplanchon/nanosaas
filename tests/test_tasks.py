@@ -149,6 +149,12 @@ async def test_the_panel_gets_the_input_type_of_each_parameter(app_module):
     ]
 
 
+async def test_the_docs_show_the_version(anon, app_module):
+    # VERSION, in main_api.py: the one of the release, tagged like v1.0.0.
+    info = (await anon.get("/openapi.json")).json()["info"]
+    assert (info["title"], info["version"]) == ("NanoSaaS", app_module.VERSION)
+
+
 async def test_the_docs_show_each_task_with_its_parameters(anon):
     schema = (await anon.get("/openapi.json")).json()
     operation = schema["paths"]["/api/task/divide"]["post"]

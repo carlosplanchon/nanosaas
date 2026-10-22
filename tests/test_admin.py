@@ -50,6 +50,15 @@ async def test_for_anyone_else_the_admin_routes_dont_exist(account, user, anon):
     assert not [path for path in paths if path.startswith("/admin")]
 
 
+async def test_an_admin_s_email_in_a_session_isn_t_enough(server, account):
+    # What whoever got JWT_SIGNING_SECRET_KEY could make: a session of their
+    # account, with an admin's email. What counts is the account's email.
+    async with client_for(server, session_cookie(account.google_id, email=ADMIN_EMAIL)) as client:
+        r = await client.get("/admin/accounts")
+        assert (r.status_code, r.json()) == NOT_FOUND
+        assert 'href="/admin"' not in (await client.get("/userpanel")).text
+
+
 async def test_an_admin_finds_an_account_and_gives_it_credits(admin, db, account):
     page = await admin.get("/admin")
     assert (page.status_code, "<title>Admin</title>" in page.text) == (200, True)

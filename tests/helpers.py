@@ -23,15 +23,15 @@ ADMIN = "admin"
 ADMIN_EMAIL = f"{ADMIN}@example.com"
 
 
-def session_cookie(google_id, expires_in=datetime.timedelta(hours=1), key=SECRET, version=None):
+def session_cookie(google_id, expires_in=datetime.timedelta(hours=1), key=SECRET, version=None, email=None):
     """
     A session JWT like the one login_callback() puts in the 'token' cookie,
     with the account's session version, or without one, like the sessions
-    from before them.
+    from before them. Its email is the account's, unless given another one.
     """
     pld = {
         "id": google_id,
-        "email": f"{google_id}@example.com",
+        "email": email or f"{google_id}@example.com",
         "first_name": "Test",
         "last_name": "User",
         "display_name": "Test User",

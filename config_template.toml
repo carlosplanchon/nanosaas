@@ -8,7 +8,7 @@ ALLOW_PRIVATE_WEBHOOKS = false  # Lets webhooks go to http:// URLs and private a
 
 [api]
 # --- Internal Keys --- #
-JWT_SIGNING_SECRET_KEY = "..."  # used to sign JWTs, make sure it is really secret and at least 32 characters long
+JWT_SIGNING_SECRET_KEY = "..."  # Signs the sessions: make one with python3 scripts/generate_jwt_secret_key.py, and keep it secret. With fewer than 32 characters, the API doesn't start.
 
 # --- Third parties keys --- #
 GOOGLE_CLIENT_ID = "..."

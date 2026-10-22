@@ -46,14 +46,14 @@ I built the first version in three days, with almost no prior knowledge of web d
     ```toml
     [api]
     # --- Internal Keys --- #
-    JWT_SIGNING_SECRET_KEY = "your_secret_key"  # Used to sign JWTs; ensure this is a strong, secret key, at least 32 characters long.
+    JWT_SIGNING_SECRET_KEY = "your_secret_key"  # Signs the sessions: at least 32 characters, and secret.
 
     # --- Third parties keys --- #
     GOOGLE_CLIENT_ID = "your_google_client_id"
     GOOGLE_CLIENT_SECRET = "your_google_client_secret"
     GOOGLE_REDIRECT_URI = "http://127.0.0.1:8000/auth/callback"  # Must be an authorized redirect URI of your Google OAuth client.
     ```
-    You can generate `JWT_SIGNING_SECRET_KEY` with `python3 scripts/generate_jwt_secret_key.py`. The rest of the template already works with Docker: `[database]` and `[taskiq]` point to the PostgreSQL and Redis of `compose.yaml`, and `ROOT_PATH` is empty, to serve the app at the root.
+    Generate `JWT_SIGNING_SECRET_KEY` with `python3 scripts/generate_jwt_secret_key.py`, and keep it secret: whoever knows it can sign a session of any user. The API doesn't start with one shorter than 32 characters, like the template's `...`. The rest of the template already works with Docker: `[database]` and `[taskiq]` point to the PostgreSQL and Redis of `compose.yaml`, and `ROOT_PATH` is empty, to serve the app at the root.
 
     `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` come from a Google OAuth client. Create one in the Google Cloud console, in the [Google Auth Platform](https://console.developers.google.com/auth/clients):
     1. Select or create a project. If the console asks you to, click **Get started** to register the app: its name, a user support email, **External** as its audience, so any Google account can log in, and a contact email.
@@ -66,7 +66,7 @@ I built the first version in three days, with almost no prior knowledge of web d
     ```bash
     docker compose up --build
     ```
-    It runs PostgreSQL, Redis, the backend and a TaskIQ worker, and serves the app at `http://127.0.0.1:8000`, only to this machine. Add `-d` to run it in the background.
+    It runs PostgreSQL, with a backup a day (see Backups), Redis, the backend and a TaskIQ worker, and serves the app at `http://127.0.0.1:8000`, only to this machine. Add `-d` to run it in the background.
     - After changing the code, run the same command again. After changing `config.toml`, run `docker compose restart api worker`. Either way, the worker takes no more tasks, and gives the ones it's running a minute to end before it restarts: it stops the others, and queues them again right away, to run from the start. If your tasks take longer, raise `--wait-tasks-timeout` in `compose.yaml`, and `stop_grace_period` with it.
     - The backend creates the tables the first time, and applies new migrations whenever it starts (see the Development Notes).
     - The data is kept in Docker volumes, so it survives restarts. `docker compose down -v` deletes it.
@@ -96,7 +96,7 @@ Requires Python 3.11 or newer, PostgreSQL and Redis 6 or newer.
     broker="redis://127.0.0.1:6379/0"
     backend="redis://127.0.0.1:6379/0"
     ```
-    The backend creates the tables, and applies new migrations, when it starts. To run Redis in Docker: `docker run -p 127.0.0.1:6379:6379 redis`. Binding the port to `127.0.0.1` keeps Redis reachable only from this machine: ports published by Docker skip firewalls like ufw. For the queued tasks to survive a crash of Redis, turn on its append-only file, as `docs/redis_conf.txt` explains.
+    The backend creates the tables, and applies new migrations, when it starts, so the database must be its user's: since PostgreSQL 15, other users can't create tables in its `public` schema. To create both, as PostgreSQL's superuser (on Linux, usually with `sudo -u postgres` before each command): `createuser --pwprompt nanosaas` and `createdb --owner nanosaas nanosaas`. To run Redis in Docker: `docker run -p 127.0.0.1:6379:6379 redis`. Binding the port to `127.0.0.1` keeps Redis reachable only from this machine: ports published by Docker skip firewalls like ufw. For the queued tasks to survive a crash of Redis, turn on its append-only file, as `docs/redis_conf.txt` explains.
 
 3. Start the backend:
     ```bash
@@ -200,7 +200,7 @@ It replaces the whole database, in a single transaction: if anything fails, the 
     ```
    Without Docker, run `python scripts/add_credits.py user@example.com 25` from the repository root. To look into the database itself, `docker compose exec postgres psql -U nanosaas` opens a shell in it.
 
-   You can also add credits from the admin page, `/admin`, after putting your email in `ADMINS`, in `config.toml`: the user panel then shows you a button to it. It lists the latest accounts, which you can search by email, with their credits and pending tasks. For any other user, it doesn't exist.
+   You can also add credits from the admin page, `/admin`, after putting your email in `ADMINS`, in `config.toml`: the user panel then shows you a button to it. What counts is your account's email, which Google gave when you first logged in, and not the session's: a session signed with a leaked `JWT_SIGNING_SECRET_KEY` and your email doesn't open it. It lists the latest accounts, which you can search by email, with their credits and pending tasks. For any other user, it doesn't exist.
 
    There you can also delete an account, as its user can from the panel: for a user who asks for it without being able to log in, or an account that abuses the service. The log says which admin deleted which account, by its ID.
 
@@ -273,6 +273,7 @@ It replaces the whole database, in a single transaction: if anything fails, the 
     tortoise -c shared.TORTOISE_ORM makemigrations
     ```
     Then restart the backend to apply it (with Docker, `docker compose up --build`). The tests fail if the models have changes without a migration.
+- Each release is a tag, like `v1.0.0`, with its notes in the repository's Releases. `VERSION`, in `main_api.py`, has its number, and `/docs` shows it. To update an installation, read the notes of the releases since yours, then bring in the code and start the app as after changing it: the backend applies the new migrations when it starts. The next notes are for installations from before the first release.
 - A database created before the migrations already has the tables of the first one: the first time this version starts, that migration is only recorded as applied, and the later ones are applied as usual. If it's from before API keys became unique, add their index by hand:
     ```sql
     ALTER TABLE account ADD CONSTRAINT account_api_key_key UNIQUE (api_key);
@@ -312,7 +313,7 @@ GitHub Actions runs them with Python 3.11 and 3.15 on every push to `main` and o
 
 ## Contributing
 
-Contributions are welcome! Please fork the repository and submit a pull request. For major changes, please open an issue first to discuss your ideas.
+Contributions are welcome! Please fork the repository and submit a pull request. For major changes, please open an issue first to discuss your ideas. To report a vulnerability, don't open an issue: see [SECURITY.md](SECURITY.md).
 
 ---
 

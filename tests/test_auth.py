@@ -1,17 +1,55 @@
 """
-Login with Google, the session cookie and logout. Google is stubbed: the
-tests don't talk to it.
+Login with Google, the session cookie, the key that signs it, and logout.
+Google is stubbed: the tests don't talk to it.
 """
 import asyncio
+import os
+import subprocess
+import sys
 import uuid
+from pathlib import Path
 
 import asyncpg
+import pytest
 from fastapi.testclient import TestClient
 from fastapi_sso.sso.base import OpenID
 
 from tests.helpers import cookie_attributes
 
 SECURE_FLAGS = {"httponly", "secure", "samesite=lax"}
+
+REPO = Path(__file__).resolve().parent.parent
+SHORT_KEY = (
+    "JWT_SIGNING_SECRET_KEY, in {config}, has {length} characters: it needs at least 32. "
+    "Make one with: python3 scripts/generate_jwt_secret_key.py\n"
+)
+
+
+def run_api(config, *arguments):
+    """Run Python with these arguments from the repository, with that config file."""
+    return subprocess.run(
+        [sys.executable, *arguments], cwd=REPO, env={**os.environ, "NANOSAAS_CONFIG": str(config)},
+        capture_output=True, text=True, timeout=60,
+    )
+
+
+def test_the_api_doesn_t_start_with_the_template_s_jwt_key():
+    # Its key is "...": anyone can read it, and sign a session of any user with it.
+    r = run_api("config_template.toml", "-m", "uvicorn", "main_api:app")
+    assert r.returncode == 1
+    assert r.stderr.endswith(SHORT_KEY.format(config="config_template.toml", length=3)), r.stderr
+
+
+@pytest.mark.parametrize("length", [31, 32])
+def test_the_api_needs_a_jwt_key_of_32_characters(tmp_path, length):
+    config = tmp_path / "config.toml"
+    template = (REPO / "config_template.toml").read_text()
+    config.write_text(template.replace('JWT_SIGNING_SECRET_KEY = "..."', f'JWT_SIGNING_SECRET_KEY = "{"k" * length}"'))
+    r = run_api(config, "-c", "import main_api")
+    if length < 32:
+        assert (r.returncode, r.stderr) == (1, SHORT_KEY.format(config=config, length=length))
+    else:
+        assert r.returncode == 0, r.stderr
 
 
 def test_login_redirects_to_google_with_a_state_cookie(app_module, monkeypatch):
