@@ -3,11 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Create or Regenerate API Key</title>
+    <title>API Key &amp; Webhook</title>
     <link rel="icon" type="image/svg+xml" href="{{ static_url('nanosaas_logo.svg') }}">
     <link rel="stylesheet" href="{{ static_url('tailwind.css') }}">
 </head>
-<body class="flex flex-col items-center justify-center min-h-screen bg-gray-100">
+<body class="flex flex-col items-center justify-center min-h-screen py-8 px-4 bg-gray-100">
     <div class="w-full max-w-sm p-6 bg-white border border-gray-300 rounded-lg shadow-md">
         <div class="flex flex-col items-center">
             <h1 class="mb-6 text-2xl font-bold text-gray-700 text-center">API Key Management</h1>
@@ -38,6 +38,56 @@
             <div id="success-message" class="hidden text-green-600 text-sm mt-4"></div>
             <div id="error-message" class="hidden text-red-600 text-sm mt-4"></div>
         </form>
+    </div>
+
+    <div class="w-full max-w-2xl p-6 mt-6 bg-white border border-gray-300 rounded-lg shadow-md">
+        <h2 class="mb-4 text-xl font-bold text-gray-700 text-center">Webhook</h2>
+        <p class="mb-4 text-sm text-gray-500">When each of your tasks ends, a POST with the task and its result goes to this URL, signed with the secret as <a href="https://www.standardwebhooks.com/" class="text-blue-600 underline">Standard Webhooks</a> says.</p>
+        <label for="webhook_url" class="block text-sm font-medium text-gray-700">URL</label>
+        <input
+            type="url"
+            id="webhook_url"
+            class="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+            placeholder="https://example.com/webhook"
+        />
+        <div class="flex gap-2 mt-3">
+            <button type="button" id="webhook-save" class="px-4 py-2 text-white bg-blue-500 rounded-lg hover:bg-blue-600">Save</button>
+            <button type="button" id="webhook-remove" class="hidden px-4 py-2 text-white bg-red-500 rounded-lg hover:bg-red-600">Remove</button>
+        </div>
+
+        <div id="webhook-details" class="hidden mt-6">
+            <label for="webhook_secret" class="block text-sm font-medium text-gray-700">Signing secret</label>
+            <input
+                type="text"
+                id="webhook_secret"
+                class="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm sm:text-sm bg-gray-50 text-gray-500 font-mono"
+                readonly
+            />
+            <div class="flex gap-2 mt-3">
+                <button type="button" id="webhook-new-secret" class="px-4 py-2 text-white bg-gray-500 rounded-lg hover:bg-gray-600">New secret</button>
+                <button type="button" id="webhook-test" class="px-4 py-2 text-white bg-green-500 rounded-lg hover:bg-green-600">Send a test event</button>
+            </div>
+
+            <h3 class="mt-6 mb-2 text-sm font-medium text-gray-700">Latest events</h3>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm text-left text-gray-700">
+                    <thead>
+                        <tr class="text-gray-500">
+                            <th class="px-2 py-1">Time</th>
+                            <th class="px-2 py-1">Event</th>
+                            <th class="px-2 py-1">Task</th>
+                            <th class="px-2 py-1">Status</th>
+                            <th class="px-2 py-1">Last answer</th>
+                        </tr>
+                    </thead>
+                    <tbody id="webhook-deliveries"></tbody>
+                </table>
+            </div>
+            <p id="webhook-no-deliveries" class="mt-2 text-sm text-gray-500">No events yet.</p>
+        </div>
+
+        <div id="webhook-message" class="hidden text-green-600 text-sm mt-4"></div>
+        <div id="webhook-error" class="hidden text-red-600 text-sm mt-4"></div>
     </div>
 
     <!-- Its script, from a file: the Content-Security-Policy blocks the ones written here -->

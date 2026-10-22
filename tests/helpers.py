@@ -3,6 +3,7 @@ import asyncio
 import contextlib
 import datetime
 import hashlib
+import http.server
 import json
 import secrets
 import threading
@@ -179,6 +180,74 @@ async def wait_for_log(log, text, timeout=30):
 def cookie_attributes(set_cookie):
     """A Set-Cookie header's attributes, without the value: {"httponly", "secure", ...}."""
     return {part.strip().lower() for part in set_cookie.split(";")[1:]}
+
+
+@dataclass
+class Received:
+    """A request that a Receiver got: when, with its headers, lowercased, and its body as it came."""
+    time: float
+    path: str
+    headers: dict
+    body: bytes
+
+
+class Receiver:
+    """
+    An HTTP server for webhooks on 127.0.0.1, on a thread of its own: it keeps
+    each POST it gets, and answers with the statuses in `statuses`, one each,
+    and then with 200, after `delay` seconds. A status can come with headers:
+    (307, {"Location": "/other"}). Its URL's path is its own, so no retry left
+    by another test reaches it, even on the same port.
+    """
+
+    def __init__(self):
+        self.received = []
+        self.statuses = []
+        self.delay = 0
+        receiver = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers["Content-Length"]))
+                headers = {name.lower(): value for name, value in self.headers.items()}
+                receiver.received.append(Received(time.monotonic(), self.path, headers, body))
+                status = receiver.statuses.pop(0) if receiver.statuses else 200
+                status, extra = status if isinstance(status, tuple) else (status, {})
+                time.sleep(receiver.delay)
+                self.send_response(status)
+                for name, value in extra.items():
+                    self.send_header(name, value)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, format, *args):
+                pass
+
+        class Server(http.server.ThreadingHTTPServer):
+            def handle_error(self, request, client_address):
+                # Like an answer that comes after the sender gave up: it's what a test wants.
+                pass
+
+        self.server = Server(("127.0.0.1", 0), Handler)
+        self.port = self.server.server_address[1]
+        self.path = f"/hook-{uuid.uuid4().hex[:8]}"
+        self.url = f"http://127.0.0.1:{self.port}{self.path}"
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    async def wait_for(self, count, timeout=30):
+        """Wait until it got `count` requests, and return them."""
+        deadline = time.monotonic() + timeout
+        while len(self.received) < count:
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"The receiver got {len(self.received)} requests, not {count}")
+            await asyncio.sleep(0.1)
+        return self.received[:count]
+
+    def stop(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join()
 
 
 class Proxy:

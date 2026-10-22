@@ -17,6 +17,7 @@ from shared import CONFIG
 from tortoise import Tortoise, timezone
 from web.db_models import TaskError, TaskHistory
 from shared import TORTOISE_ORM
+from webhooks import deliver_webhooks
 
 import asyncio
 import datetime
@@ -387,12 +388,16 @@ async def startup(state: TaskiqState):
     state.tortoise = await Tortoise.init(config=TORTOISE_ORM)
     state.requeuing = asyncio.create_task(requeue_lost_tasks())
     state.beating = asyncio.create_task(beat())
+    state.delivering = asyncio.create_task(deliver_webhooks())
 
 
 @broker.on_event(TaskiqEvents.WORKER_SHUTDOWN)
 async def shutdown(state: TaskiqState):
     state.requeuing.cancel()
     state.beating.cancel()
+    # Its attempts stop with it, before their connections close.
+    state.delivering.cancel()
+    await asyncio.wait({state.delivering}, timeout=2)
     await state.tortoise.close_connections()
 
 

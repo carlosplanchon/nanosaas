@@ -4,6 +4,7 @@ INITIAL_CREDITS = 25  # Credits of each new account. Any Google account can log 
 MAX_PENDING_TASKS = 10  # The most tasks an account can have pending, queued or running: one more gets a 429 error, so one account can't fill the queue.
 MAX_BODY_SIZE = 1048576  # The largest request body the API takes, in bytes (1 MiB): a larger one gets a 413 error, before the API reads it. Raise it if your tasks take large parameters.
 ADMINS = []  # The emails of the users who can open the admin page, /admin, to see the accounts and give them credits.
+ALLOW_PRIVATE_WEBHOOKS = false  # Lets webhooks go to http:// URLs and private addresses, like localhost: only to try them on your machine. On a server, users could reach your internal services with them.
 
 [api]
 # --- Internal Keys --- #

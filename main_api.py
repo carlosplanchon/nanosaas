@@ -64,7 +64,9 @@ from taskiq_task import broker
 from taskiq_task import ATTEMPTS, LEASE, QUEUE_TIMEOUT, TIME_LIMIT
 from taskiq_task import LOG_FORMAT, TaskLost, ping_postgres, ping_redis, queue_task
 
-from web.db_models import Account, DeletedAccount, TaskHistory
+from web.db_models import Account, DeletedAccount, TaskHistory, Webhook, WebhookDelivery
+
+from webhooks import Undeliverable, check_url, new_secret
 
 from shared import CONFIG
 from shared import TORTOISE_ORM
@@ -695,6 +697,110 @@ async def create_or_regenerate_api_key(
     return {"api_key": new_api_key}
 
 
+# The latest deliveries of a webhook that the API key page shows.
+WEBHOOK_DELIVERIES_SHOWN = 20
+# How often an account can send a test event to its webhook.
+WEBHOOK_TEST_INTERVAL = datetime.timedelta(seconds=10)
+
+
+class WebhookIn(BaseModel):
+    url: str
+
+
+async def webhook_of(account: Account) -> dict:
+    """The account's webhook as the API key page shows it, with its latest deliveries."""
+    webhook = await Webhook.get_or_none(account_id=account.id)
+    if webhook is None:
+        return {"url": None, "secret": None, "deliveries": []}
+    # Without their payloads, which the page doesn't show.
+    deliveries = await WebhookDelivery.filter(webhook_id=webhook.id).order_by(
+        "-created_at", "-id"
+    ).limit(WEBHOOK_DELIVERIES_SHOWN).only(
+        "id", "message_id", "type", "task_id", "status", "attempts", "created_at", "last_response"
+    )
+    return {
+        "url": webhook.url,
+        "secret": webhook.secret,
+        "deliveries": [
+            {
+                "id": delivery.message_id,
+                "type": delivery.type,
+                "task_id": delivery.task_id,
+                "status": delivery.status,
+                "attempts": delivery.attempts,
+                "created_at": delivery.created_at.isoformat(),
+                # The receiver's answer, from another server: the page shows it as text.
+                "last_response": delivery.last_response,
+            }
+            for delivery in deliveries
+        ],
+    }
+
+
+# The webhook's routes take only the session, like the API key's: a leaked key
+# can't send the account's results somewhere else. Out of /docs, like the panel's.
+@app.get("/user/webhook", include_in_schema=False)
+async def get_webhook(user: OpenID = Depends(get_logged_user)):
+    return await webhook_of(await Account.get(google_id=user.id))
+
+
+@app.put("/user/webhook", include_in_schema=False)
+async def set_webhook(webhook_in: WebhookIn, user: OpenID = Depends(get_logged_user)):
+    """Set the URL of the account's webhook. A new one gets a secret, which signs its events."""
+    try:
+        await check_url(webhook_in.url)
+    except Undeliverable as e:
+        raise HTTPException(status_code=422, detail=f"{e}.")
+    account = await Account.get(google_id=user.id)
+    webhook, created = await Webhook.get_or_create(
+        account=account, defaults={"url": webhook_in.url, "secret": new_secret()}
+    )
+    if not created:
+        # The pending deliveries go to the new URL.
+        webhook.url = webhook_in.url
+        await webhook.save(update_fields=["url"])
+    return await webhook_of(account)
+
+
+@app.delete("/user/webhook", include_in_schema=False)
+async def remove_webhook(user: OpenID = Depends(get_logged_user)):
+    """Remove the account's webhook, with its deliveries: the pending ones aren't sent."""
+    account = await Account.get(google_id=user.id)
+    await Webhook.filter(account_id=account.id).delete()
+    return await webhook_of(account)
+
+
+@app.post("/user/webhook/secret", include_in_schema=False)
+async def new_webhook_secret(user: OpenID = Depends(get_logged_user)):
+    """Replace the webhook's secret: it signs the next attempts, of the pending deliveries too."""
+    account = await Account.get(google_id=user.id)
+    if not await Webhook.filter(account_id=account.id).update(secret=new_secret()):
+        raise HTTPException(status_code=404, detail="Set a webhook URL first.")
+    return await webhook_of(account)
+
+
+@app.post("/user/webhook/test", include_in_schema=False)
+async def test_webhook(user: OpenID = Depends(get_logged_user)):
+    """
+    Send a webhook.test event, to see how the receiver gets the events. It
+    replaces a pending one, and it can be sent once every WEBHOOK_TEST_INTERVAL:
+    otherwise, users could send any number of requests anywhere.
+    """
+    account = await Account.get(google_id=user.id)
+    webhook = await Webhook.get_or_none(account_id=account.id)
+    if webhook is None:
+        raise HTTPException(status_code=404, detail="Set a webhook URL first.")
+    tests = WebhookDelivery.filter(webhook_id=webhook.id, type="webhook.test")
+    if await tests.filter(created_at__gt=datetime.datetime.now(tz=datetime.timezone.utc) - WEBHOOK_TEST_INTERVAL).exists():
+        raise HTTPException(
+            status_code=429,
+            detail=f"Wait {WEBHOOK_TEST_INTERVAL.seconds} seconds between test events.",
+        )
+    await tests.filter(status="PENDING").delete()
+    await WebhookDelivery.queue(webhook, "webhook.test", {})
+    return await webhook_of(account)
+
+
 @app.get("/user/api_key_page", response_class=HTMLResponse)
 async def api_key_page(
     request: Request,
@@ -1132,17 +1238,7 @@ async def get_task_details_json_from_user(
         await refresh_task(task)
 
         # Return task details as JSON
-        return JSONResponse(
-            {
-                "task_id": task.task_id,
-                "task_type": task.task_type,
-                "parameters": task.parameters,
-                "status": task.status,
-                "result": task.result,
-                "created_at": task.created_at.isoformat(),
-                "cost": task.cost,
-            }
-        )
+        return JSONResponse(task.details())
 
     except DoesNotExist:
         raise HTTPException(
@@ -1184,17 +1280,7 @@ async def get_task_details_json(
         await refresh_task(task)
 
         # Return task details as JSON
-        return JSONResponse(
-            {
-                "task_id": task.task_id,
-                "task_type": task.task_type,
-                "parameters": task.parameters,
-                "status": task.status,
-                "result": task.result,
-                "created_at": task.created_at.isoformat(),
-                "cost": task.cost,
-            }
-        )
+        return JSONResponse(task.details())
 
     except HTTPException:
         # Let the 404 above through instead of turning it into a 500.

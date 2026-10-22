@@ -9,6 +9,7 @@ I built the first version in three days, with almost no prior knowledge of web d
 ## Features
 
 - **Task Management**: Run and monitor background tasks using TaskIQ.
+- **Webhooks**: Each task that ends sends a signed POST to its account's URL, as [Standard Webhooks](https://www.standardwebhooks.com/) says.
 - **Real-Time Updates**: Track task statuses and results in real time.
 - **Secure Authentication**: Google SSO for easy and secure login.
 - **Credits System**: Users are assigned credits to manage task execution, ensuring controlled resource usage.
@@ -164,9 +165,9 @@ It replaces the whole database, in a single transaction: if anything fails, the 
 
    It shows the tasks 50 at a time (`TASK_HISTORY_LIMIT` in `main_api.py`), the latest first, with buttons to the older and the newer ones, and a *Cancel* button on the pending ones that no worker started yet. It checks the ones it shows every 5 seconds while one is pending, every 30 seconds otherwise, and not while its tab is hidden.
 
-   At the bottom of the panel, users can delete their account, with its tasks and its API key: its sessions end on every device. All that's kept is a hash of its Google ID, so that logging in with it again starts an account without `INITIAL_CREDITS`: otherwise, deleting the account would be a way to get them again. The results of its tasks may stay in Redis for up to a day, until the result backend forgets them.
+   At the bottom of the panel, users can delete their account, with its tasks, its API key and its webhook: its sessions end on every device. All that's kept is a hash of its Google ID, so that logging in with it again starts an account without `INITIAL_CREDITS`: otherwise, deleting the account would be a way to get them again. The results of its tasks may stay in Redis for up to a day, until the result backend forgets them.
 
-4. Use the API with the key from the *API Key Management* page, sent in the `X-API-Key` header. A task starts with a POST to `/api/task/<name>`, with its parameters in a JSON object:
+4. Use the API with the key from the *API Key & Webhook* page, sent in the `X-API-Key` header. A task starts with a POST to `/api/task/<name>`, with its parameters in a JSON object:
     ```bash
     curl -H "X-API-Key: your_api_key" http://127.0.0.1:8000/api/user_credits
     curl -H "X-API-Key: your_api_key" -H "Content-Type: application/json" -d '{"x": 10, "y": 4}' http://127.0.0.1:8000/api/task/divide
@@ -179,6 +180,19 @@ It replaces the whole database, in a single transaction: if anything fails, the 
    To retry a request safely, for example after a timeout, send it with an `Idempotency-Key` header, with a value you pick for each request, like a UUID. Sent again with the same key, the request gets the task it started, without paying for another one, and if it didn't start one, it starts it then. Reusing a key for another task or other parameters gets a 422 error. The panel does the same, so a double click starts one task.
 
    The page shows the whole key only when you generate it: the database keeps just its first characters and a hash of it.
+
+   Instead of asking for a task's details until it ends, set a webhook on the same page: a URL that gets a POST when each task of the account ends, started from the panel or the API, canceled ones too. Its body is the task, as `/api/task_details` gives it:
+    ```json
+    {"type": "task.ended", "timestamp": "2026-10-21T12:30:05.123456+00:00", "data": {"task_id": "...", "task_type": "divide", "parameters": {"x": 10, "y": 4}, "status": "SUCCESS", "result": 2.5, "created_at": "2026-10-21T12:30:00.123456+00:00", "cost": 1}}
+    ```
+   The events follow [Standard Webhooks](https://www.standardwebhooks.com/), so its libraries check them, with the secret the page shows. In Python, with `pip install standardwebhooks`:
+    ```python
+    from standardwebhooks.webhooks import Webhook
+
+    # Raises an exception if the signature is wrong, or the event is more than 5 minutes old.
+    event = Webhook(secret).verify(raw_body, headers)
+    ```
+   The signature, in the `webhook-signature` header, covers the event's ID (`webhook-id`), its time (`webhook-timestamp`) and the body as it came: check it before parsing the body. Only a 2xx answer delivers an event, within 10 seconds. After any other answer, a timeout or an error, it's sent again, with the same ID, up to 10 times in about 3 days (`RETRIES` in `webhooks.py`), unless the answer is a 410, which stops that event's attempts. So answer quickly, skip the IDs you got already, and don't count on the order: events can arrive out of order, and once in a while twice. Redirects aren't followed, and cookies aren't kept. The page shows the latest events and how they went, and sends a test one, `webhook.test`, once every 10 seconds at most. A new secret signs the next attempts, of the pending events too. The URL must be https, and its host's addresses public, which the worker checks again before each attempt: users can't make it reach your internal services. To try webhooks on your machine, see `ALLOW_PRIVATE_WEBHOOKS` in the Development Notes.
 5. Each user starts with `INITIAL_CREDITS` credits, set in `config.toml` (25 by default). A task's cost, 1 credit unless it says otherwise (see step 6), is reserved when it's queued and given back if it fails, or is canceled, so only successful tasks are charged. When credits run out, the user can't start more tasks until you add more, giving the email the user logs in with:
     ```bash
     docker compose exec api python scripts/add_credits.py user@example.com 25
@@ -251,6 +265,7 @@ It replaces the whole database, in a single transaction: if anything fails, the 
 - To monitor tasks, read the worker's log: it shows each task it runs, and the errors, with their traceback, except a `TaskError`, which takes a line. With Docker, `docker compose logs -f worker`. The `taskhistory` table keeps every task's status and result.
 - `/health` answers 200 while the API can use PostgreSQL and Redis, and 503 when one of them doesn't answer within 2 seconds (`HEALTH_TIMEOUT` in `main_api.py`), down or hung: it says which one, and the API's log says why. The healthcheck of `compose.yaml` asks it every 30 seconds, so `docker compose ps` shows the API as unhealthy meanwhile. To hear about it, point an uptime monitor at `https://your-domain.com/health`.
 - The worker has a healthcheck too: each of its processes writes a heartbeat every 5 seconds while it can use PostgreSQL and Redis, and `scripts/worker_healthcheck.py` fails when one of them is more than 30 seconds old. A task with blocking code stops it too, since it holds the event loop of its process (see step 5 of Usage). `docker compose ps` shows the worker as unhealthy meanwhile, and its log says when PostgreSQL or Redis stops answering.
+- To try webhooks with a receiver on your machine, set `ALLOW_PRIVATE_WEBHOOKS = true` in `config.toml`: they can then go to http:// URLs and private addresses, like `http://127.0.0.1:9000/hook`. Don't set it on a server, where users could reach your internal services with them. With Docker, the worker sends them from its container, where `127.0.0.1` is the container itself. Each failed attempt takes a line in the worker's log, with the host, not the URL, which may have a token in it.
 - The database changes are migrations in `web/migrations/`, made with Tortoise ORM's own tool. The backend applies the new ones when it starts, and records them in the `tortoise_migrations` table. After changing the models in `web/db_models.py`, create a migration from the repository root, with the virtual environment activated (it reads `config.toml`, but doesn't connect to the database):
     ```bash
     tortoise -c shared.TORTOISE_ORM makemigrations
@@ -282,7 +297,7 @@ pytest
 
 They take a few minutes: the example task waits 5 seconds, and some tests wait for tasks to time out.
 
-GitHub Actions runs them with Python 3.11 and 3.15 on every push to `main` and on every pull request (`.github/workflows/tests.yml`). It also starts the app with Docker Compose, runs two tasks through the API, and backs up and restores the database. Every week, Dependabot opens pull requests with the new versions of the Python packages and of the workflow's actions, which are pinned (`.github/dependabot.yml`), and the tests run on them. It doesn't watch Alpine.js, in `web/static/`: update it by hand, as step 7 of Usage says.
+GitHub Actions runs them with Python 3.11 and 3.15 on every push to `main` and on every pull request (`.github/workflows/tests.yml`). It also starts the app with Docker Compose, runs two tasks through the API, checks that a webhook to a private address isn't sent, and backs up and restores the database. Every week, Dependabot opens pull requests with the new versions of the Python packages and of the workflow's actions, which are pinned (`.github/dependabot.yml`), and the tests run on them. It doesn't watch Alpine.js, in `web/static/`: update it by hand, as step 7 of Usage says.
 
 ---
 

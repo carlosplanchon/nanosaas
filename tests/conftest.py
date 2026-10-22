@@ -68,7 +68,7 @@ def services():
 
 def write_config(
     path, services, port, root_path="", broker=None, db_name=None, initial_credits=None, admins=None,
-    max_pending_tasks=None, max_body_size=None, db_address=None, **taskiq
+    max_pending_tasks=None, max_body_size=None, allow_private_webhooks=None, db_address=None, **taskiq
 ):
     """
     db_address: another (host, port) for PostgreSQL, like a proxy's.
@@ -80,6 +80,7 @@ def write_config(
     app += "" if admins is None else f"ADMINS = {json.dumps(admins)}\n"
     app += "" if max_pending_tasks is None else f"MAX_PENDING_TASKS = {max_pending_tasks}\n"
     app += "" if max_body_size is None else f"MAX_BODY_SIZE = {max_body_size}\n"
+    app += "" if allow_private_webhooks is None else f"ALLOW_PRIVATE_WEBHOOKS = {json.dumps(allow_private_webhooks)}\n"
     settings = "".join(f"{key} = {value}\n" for key, value in taskiq.items())
     path.write_text(f"""\
 [app]
@@ -324,6 +325,44 @@ async def retry_db(services, retry_server):
 async def retry_account(retry_db):
     """An account in the database of retry_server."""
     return await create_account(retry_db)
+
+
+@pytest.fixture(scope="session")
+def webhook_server(tmp_path_factory, services, server):
+    """
+    The API with ALLOW_PRIVATE_WEBHOOKS, so webhooks can go to the tests'
+    receivers, on 127.0.0.1. On its own Redis and PostgreSQL databases, so
+    only its worker, webhook_worker, sends its webhooks' deliveries.
+    """
+    asyncio.run(create_database(services, "webhooks"))
+    broker = services.redis_url.rsplit("/", 1)[0] + "/9"
+    process, webhooks = run_server(
+        tmp_path_factory, services, "webhooks", broker=broker, db_name="webhooks", allow_private_webhooks=True
+    )
+    yield webhooks
+    process.stop()
+
+
+@pytest.fixture(scope="session")
+def webhook_worker(webhook_server):
+    """The worker of webhook_server."""
+    process = run_worker(webhook_server)
+    yield process
+    process.stop()
+
+
+@pytest.fixture
+async def webhook_db(services, webhook_server):
+    """A connection to the database of webhook_server."""
+    conn = await asyncpg.connect(services.dsn.rsplit("/", 1)[0] + "/webhooks")
+    yield conn
+    await conn.close()
+
+
+@pytest.fixture
+async def webhook_account(webhook_db):
+    """An account in the database of webhook_server."""
+    return await create_account(webhook_db)
 
 
 @pytest.fixture(scope="session")

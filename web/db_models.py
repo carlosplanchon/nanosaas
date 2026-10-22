@@ -3,13 +3,18 @@
 import datetime
 import hashlib
 import json
+import logging
+import uuid
 
 from pydantic_core import to_jsonable_python
 
 from tortoise.models import Model
 from tortoise import fields, timezone
+from tortoise.exceptions import IntegrityError
 from tortoise.expressions import F
 from tortoise.transactions import in_transaction
+
+logger = logging.getLogger(__name__)
 
 
 # Define Account Model using TortoiseORM
@@ -164,6 +169,18 @@ class TaskHistory(Model):
     def __str__(self):
         return f"{self.task_type} - {self.task_id}"
 
+    def details(self) -> dict:
+        """The task as its account gets it: from /api/task_details, and in its webhook's events."""
+        return {
+            "task_id": self.task_id,
+            "task_type": self.task_type,
+            "parameters": self.parameters,
+            "status": self.status,
+            "result": self.result,
+            "created_at": self.created_at.isoformat(),
+            "cost": self.cost,
+        }
+
     @classmethod
     async def start(cls, task_id: str, lease: datetime.timedelta) -> datetime.datetime | None:
         """
@@ -249,6 +266,7 @@ class TaskHistory(Model):
             ).update(status="CANCELED")
             if canceled:
                 task = await cls.get(task_id=task_id)
+                await WebhookDelivery.record(task)
                 await Account.refund_credits(account.google_id, task.cost)
 
         return canceled == 1
@@ -283,9 +301,91 @@ class TaskHistory(Model):
                 status=status, result=encoded
             )
 
-            if updated and error is not None:
-                # Only successful tasks are charged.
-                task = await cls.get(task_id=task_id).prefetch_related("user")
-                await Account.refund_credits(task.user.google_id, task.cost)
+            if updated:
+                task = await cls.get(task_id=task_id)
+                await WebhookDelivery.record(task)
+                if error is not None:
+                    # Only successful tasks are charged.
+                    await task.fetch_related("user")
+                    await Account.refund_credits(task.user.google_id, task.cost)
 
         return updated == 1
+
+
+class Webhook(Model):
+    """
+    The URL where an account gets an event when each of its tasks ends.
+
+    With the secret that signs the events (see webhooks.py). An account has
+    one at most.
+    """
+    id = fields.IntField(primary_key=True)
+    account = fields.OneToOneField("models.Account", on_delete=fields.CASCADE, related_name="webhook")
+    url = fields.CharField(max_length=2000)
+    # "whsec_" and the base64 of random bytes. Readable, unlike the API key:
+    # the worker signs each event with it.
+    secret = fields.CharField(max_length=100)
+    created_at = fields.DatetimeField(auto_now_add=True)
+
+
+class WebhookDelivery(Model):
+    """
+    An event for a webhook, which the worker sends until it's delivered.
+
+    Or until it runs out of attempts (see webhooks.py). It's recorded in the
+    same transaction as the change it tells of: none is lost, and none tells
+    of a change that was undone.
+    """
+    id = fields.IntField(primary_key=True)
+    webhook = fields.ForeignKeyField("models.Webhook", on_delete=fields.CASCADE, related_name="deliveries")
+    # Its webhook-id header, the same in each attempt: receivers skip the ones they got.
+    message_id = fields.CharField(max_length=50, unique=True)
+    type = fields.CharField(max_length=50)
+    # The task it tells of, if it's a task's event.
+    task_id = fields.CharField(max_length=255, null=True)
+    # The body, as it's sent and signed.
+    payload = fields.TextField()
+    created_at = fields.DatetimeField(auto_now_add=True)
+    # PENDING until it's DELIVERED, or FAILED after its last attempt.
+    status = fields.CharField(max_length=20, default="PENDING")
+    attempts = fields.IntField(default=0)
+    # When its next attempt is due. While a worker sends it, when the worker's claim on it ends.
+    next_attempt_at = fields.DatetimeField()
+    last_attempt_at = fields.DatetimeField(null=True)
+    # How its last attempt went, like "200 OK" or "Timeout", or why it wasn't sent.
+    last_response = fields.CharField(max_length=200, null=True)
+
+    class Meta:
+        # For the workers, which send the pending ones that are due, and for the
+        # page with the latest of a webhook. With the columns, as the migration takes them.
+        indexes = (("status", "next_attempt_at"), ("webhook_id", "created_at"))
+
+    @classmethod
+    async def queue(cls, webhook: Webhook, type: str, data: dict, task_id: str | None = None) -> None:
+        """Record an event for a webhook, to be sent right away."""
+        now = timezone.now()
+        payload = {"type": type, "timestamp": now.isoformat(), "data": data}
+        await cls.create(
+            webhook=webhook, message_id=f"msg_{uuid.uuid4().hex}", type=type, task_id=task_id,
+            payload=json.dumps(payload, separators=(",", ":")), next_attempt_at=now,
+        )
+
+    @classmethod
+    async def record(cls, task: TaskHistory) -> None:
+        """
+        Record the task.ended event of a task that just ended, if its account
+        has a webhook: TaskHistory.finish() and cancel() call it in their
+        transactions, after the task's row and before the account's.
+        """
+        try:
+            # In a savepoint, so nothing here makes the task's end fail: a webhook being
+            # removed makes the insert wait for it, and then fail, and in a deploy, a new
+            # worker may end a task before the API created the webhooks' tables.
+            async with in_transaction():
+                webhook = await Webhook.get_or_none(account_id=task.user_id)
+                if webhook is not None:
+                    await cls.queue(webhook, "task.ended", task.details(), task_id=task.task_id)
+        except IntegrityError:
+            pass
+        except Exception:
+            logger.exception("Can't record the webhook event of task %s", task.task_id)

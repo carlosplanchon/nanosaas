@@ -17,3 +17,6 @@ asyncpg==0.32.0
 taskiq==0.13.0
 taskiq-redis==1.2.4
 redis==8.1.0
+
+# Sends the webhooks:
+httpx==0.28.1

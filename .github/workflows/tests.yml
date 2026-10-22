@@ -119,6 +119,30 @@ jobs:
           echo "Credits after adding 5: $credits"
           [ "$credits" = 29 ]
 
+      # A task's event, for a webhook at the API's container, whose address is private:
+      # the worker checks the addresses before each attempt, so it isn't sent.
+      - name: Check a webhook
+        shell: bash
+        run: |
+          query() { docker compose exec -T postgres psql -U nanosaas -tAc "$1"; }
+          key=$(openssl rand -hex 32)
+          stored="${key:0:8}\$$(printf %s "$key" | sha256sum | cut -d ' ' -f 1)"
+          query "INSERT INTO account (google_id, email, picture, provider, created_at, credits, api_key)
+                 VALUES ('hook', 'hook@example.com', '', 'google', now(), 5, '$stored')" > /dev/null
+          # Straight in the database: the API checks the URL too, and wouldn't take it.
+          query "INSERT INTO webhook (account_id, url, secret, created_at)
+                 SELECT id, 'https://api:8000/hook', 'whsec_$(openssl rand -base64 32)', now()
+                 FROM account WHERE google_id = 'hook'" > /dev/null
+          curl --silent --fail --header "X-API-Key: $key" --header "Content-Type: application/json" \
+            --data '{"x": 6, "y": 3}' --output /dev/null http://127.0.0.1:8000/api/task/divide
+          for _ in $(seq 30); do
+            answer=$(query "SELECT last_response FROM webhookdelivery WHERE type = 'task.ended' ORDER BY id DESC LIMIT 1")
+            [ -n "$answer" ] && break
+            sleep 1
+          done
+          echo "The webhook's last attempt: $answer"
+          [ "$answer" = "api has a private address" ]
+
       # As the README says: a backup, a mistake, and the backup restored.
       - name: Back up and restore the database
         shell: bash
