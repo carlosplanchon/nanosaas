@@ -53,7 +53,7 @@ from tortoise.transactions import in_transaction
 
 from fastapi.staticfiles import StaticFiles
 
-from starlette.datastructures import MutableHeaders
+from starlette.datastructures import Headers, MutableHeaders
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
@@ -101,6 +101,11 @@ ADMINS: set[str] = {email.lower() for email in CONFIG["app"].get("ADMINS", [])}
 # tasks would wait behind its tasks, failing after queue_timeout.
 MAX_PENDING_TASKS: int = CONFIG["app"].get("MAX_PENDING_TASKS", 10)
 
+# The largest request body the API takes, in bytes. FastAPI reads the whole
+# body of a route, and parses it, before it checks the API key or the session:
+# without a limit, anyone could fill the API's memory (see BodySizeLimitMiddleware).
+MAX_BODY_SIZE: int = CONFIG["app"].get("MAX_BODY_SIZE", 1024 * 1024)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -122,6 +127,47 @@ app = FastAPI(
     lifespan=lifespan,
     exception_handlers=tortoise_exception_handlers()
 )
+
+
+TOO_LARGE = f"The request's body is larger than the limit of {MAX_BODY_SIZE} bytes."
+# With the answer, the connection ends: the server doesn't read the rest of the body.
+CLOSE = {"Connection": "close"}
+
+
+class BodySizeLimitMiddleware:
+    """
+    Answer 413 to a request whose body is larger than MAX_BODY_SIZE, before
+    the app reads more of it than that: right away when its Content-Length
+    says so, and otherwise once that much of it arrives.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        length = Headers(scope=scope).get("content-length")
+        if length is not None and int(length) > MAX_BODY_SIZE:
+            return await JSONResponse({"detail": TOO_LARGE}, status_code=413, headers=CLOSE)(scope, receive, send)
+
+        received = 0
+
+        async def receive_within_limit():
+            nonlocal received
+            message = await receive()
+            received += len(message.get("body", b""))
+            if received > MAX_BODY_SIZE:
+                # FastAPI raises it again from where it reads the body, and answers it like the one above.
+                raise HTTPException(status_code=413, detail=TOO_LARGE, headers=CLOSE)
+            return message
+
+        await self.app(scope, receive_within_limit, send)
+
+
+# Before SecurityHeadersMiddleware, which goes around it, so its answers get the headers too.
+app.add_middleware(BodySizeLimitMiddleware)
 
 
 # What the pages can load and run: only this server's files, without inline

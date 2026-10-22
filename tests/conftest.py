@@ -68,7 +68,7 @@ def services():
 
 def write_config(
     path, services, port, root_path="", broker=None, db_name=None, initial_credits=None, admins=None,
-    max_pending_tasks=None, db_address=None, **taskiq
+    max_pending_tasks=None, max_body_size=None, db_address=None, **taskiq
 ):
     """
     db_address: another (host, port) for PostgreSQL, like a proxy's.
@@ -79,6 +79,7 @@ def write_config(
     app = "" if initial_credits is None else f"INITIAL_CREDITS = {initial_credits}\n"
     app += "" if admins is None else f"ADMINS = {json.dumps(admins)}\n"
     app += "" if max_pending_tasks is None else f"MAX_PENDING_TASKS = {max_pending_tasks}\n"
+    app += "" if max_body_size is None else f"MAX_BODY_SIZE = {max_body_size}\n"
     settings = "".join(f"{key} = {value}\n" for key, value in taskiq.items())
     path.write_text(f"""\
 [app]

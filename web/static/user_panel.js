@@ -212,8 +212,8 @@ function taskManager() {
                     this.refresh(); // Refresh task history and credits after starting a new task
                 } else if (response.status === 403) {
                     alert('Not enough credits');
-                } else if (response.status === 429) {
-                    // Too many pending tasks: the server says how many it takes.
+                } else if (response.status === 413 || response.status === 429) {
+                    // Parameters too large, or too many pending tasks: the server says its limit.
                     alert((await response.json()).detail);
                 } else if (response.status === 422) {
                     const data = await response.json();
