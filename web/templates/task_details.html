@@ -8,21 +8,23 @@
     <link rel="stylesheet" href="{{ static_url('tailwind.css') }}">
     <!-- Include the script that colors the result's JSON -->
     <script src="{{ static_url('json.js') }}"></script>
-    <!-- Include Alpine.js -->
-    <script src="{{ static_url('alpine-3.17.4.min.js') }}" defer></script>
+    <!-- Include Alpine.js, its build that works without eval -->
+    <script src="{{ static_url('alpine-csp-3.17.4.min.js') }}" defer></script>
 </head>
 <body class="bg-gray-100 font-sans leading-normal tracking-normal">
-    <div class="container mx-auto mt-10" x-data="taskDetails('{{ task_id }}')" x-init="fetchTaskDetails()">
+    <!-- The task's ID, for its script. Its expressions use only the component's
+         data and methods, in task_details.js. -->
+    <div class="container mx-auto mt-10" x-data="taskDetails" data-task-id="{{ task_id }}">
         <div class="bg-white p-6 rounded-lg shadow-md">
             <h1 class="text-3xl font-bold text-gray-700 mb-4">Task Details</h1>
             <p class="text-gray-700"><strong>Task ID:</strong> <span x-text="task.task_id"></span></p>
             <p class="text-gray-700"><strong>Task Type:</strong> <span x-text="task.task_type"></span></p>
-            <p class="text-gray-700"><strong>Parameters:</strong> <span x-text="JSON.stringify(task.parameters, null, 2)"></span></p>
+            <p class="text-gray-700"><strong>Parameters:</strong> <span x-text="parametersText()"></span></p>
             <p class="text-gray-700"><strong>Status:</strong> <span x-text="task.status"></span></p>
             <p class="text-gray-700"><strong>Cost in credits:</strong> <span x-text="task.cost"></span></p>
             <p class="text-gray-700"><strong>Created At:</strong> <span x-text="task.created_at"></span></p>
             <p class="text-gray-700 mt-4"><strong>Result:</strong></p>
-            <pre class="mt-1 p-3 bg-gray-50 border border-gray-200 rounded-md text-sm overflow-x-auto"><code x-html="highlightJson(task.result)"></code></pre>
+            <pre class="mt-1 p-3 bg-gray-50 border border-gray-200 rounded-md text-sm overflow-x-auto"><code x-effect="showJson($el, task.result)"></code></pre>
             <a href="{{ root_prefix }}/userpanel" class="mt-4 inline-block bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded-md">
                 Back to Dashboard
             </a>

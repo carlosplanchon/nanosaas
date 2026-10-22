@@ -50,7 +50,13 @@ def test_the_built_css_has_every_class_of_the_templates_and_scripts():
     # The scripts write class attributes too, like json.js for the colors of the results.
     files = [*(REPO / "web" / "templates").glob("*.html"), *(REPO / "web" / "static").glob("*.js")]
     for file in files:
-        for classes in re.findall(r'class="([^"]*)"', file.read_text()):
+        text = file.read_text()
+        # The class attributes, and the classes in quotes in Alpine.js's :class bindings.
+        bound = re.findall(r':class="([^"]*)"', text)
+        found = re.findall(r'(?<![\w:-])class="([^"]*)"', text) + [
+            classes for binding in bound for classes in re.findall(r"'([^']*)'", binding)
+        ]
+        for classes in found:
             for name in classes.split():
                 # Tailwind escapes these characters in its selectors.
                 selector = "." + re.sub(r"([:/.\[\]])", r"\\\1", name)

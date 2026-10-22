@@ -64,7 +64,7 @@ from taskiq_task import broker
 from taskiq_task import ATTEMPTS, LEASE, QUEUE_TIMEOUT, TIME_LIMIT
 from taskiq_task import LOG_FORMAT, TaskLost, ping_postgres, ping_redis, queue_task
 
-from web.db_models import Account, DeletedAccount, TaskHistory, Webhook, WebhookDelivery
+from web.db_models import Account, CreditMovement, DeletedAccount, TaskHistory, Webhook, WebhookDelivery
 
 from webhooks import Undeliverable, check_url, new_secret
 
@@ -173,12 +173,12 @@ app.add_middleware(BodySizeLimitMiddleware)
 
 
 # What the pages can load and run: only this server's files, without inline
-# scripts or event handlers, the usual way injected HTML runs its code. Alpine.js
-# evaluates the expressions of its attributes with Function, which needs
-# 'unsafe-eval'. No site can show the pages in a frame, to trick users into
-# clicking their buttons.
+# scripts or event handlers, the usual way injected HTML runs its code, and
+# without eval: the pages load Alpine.js's CSP build, which reads the
+# expressions of its attributes itself instead of running them as JavaScript.
+# No site can show the pages in a frame, to trick users into clicking their buttons.
 CONTENT_SECURITY_POLICY = (
-    "default-src 'self'; script-src 'self' 'unsafe-eval'; object-src 'none'; "
+    "default-src 'self'; script-src 'self'; object-src 'none'; "
     "base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 )
 
@@ -512,19 +512,25 @@ async def login_callback(request: Request):
             )
 
     # Check if account exists, if not, create it: without credits if the
-    # Google account had one that was deleted (see DeletedAccount).
-    account, created = await Account.get_or_create(
-        google_id=openid.id,
-        defaults={
-            "email": openid.email,
-            "first_name": openid.first_name,
-            "last_name": openid.last_name,
-            "display_name": openid.display_name,
-            "picture": openid.picture,
-            "provider": openid.provider,
-            "credits": 0 if await DeletedAccount.exists_for(openid.id) else INITIAL_CREDITS,
-        },
-    )
+    # Google account had one that was deleted (see DeletedAccount). A new
+    # account's credits start its credit history.
+    async with in_transaction():
+        account, created = await Account.get_or_create(
+            google_id=openid.id,
+            defaults={
+                "email": openid.email,
+                "first_name": openid.first_name,
+                "last_name": openid.last_name,
+                "display_name": openid.display_name,
+                "picture": openid.picture,
+                "provider": openid.provider,
+                "credits": 0 if await DeletedAccount.exists_for(openid.id) else INITIAL_CREDITS,
+            },
+        )
+        if created and account.credits:
+            await CreditMovement.create(
+                account=account, amount=account.credits, balance=account.credits, reason="initial"
+            )
 
     # Create a JWT with the user's OpenID
     expiration = datetime.datetime.now(
@@ -668,6 +674,99 @@ async def task_history_with_api_key(
     task_id of the last task of this one as before.
     """
     return await task_history_page(account, before, limit)
+
+
+# The pages of the credit history, like the tasks'.
+CREDIT_HISTORY_LIMIT = 50
+
+CreditsBefore = typing.Annotated[int | None, Query(
+    description="The id of the last movement of the previous page: this page has the movements before it."
+)]
+CreditsLimit = typing.Annotated[int, Query(
+    ge=1, le=TASK_HISTORY_MAX_LIMIT, description="How many movements the page has, at most."
+)]
+
+
+# A change of the account's credits.
+class CreditMovementItem(BaseModel):
+    id: int
+    # Positive when credits came in, negative when they went out.
+    amount: int
+    # The account's credits after it.
+    balance: int
+    # Why: "initial", "task", "refund", "admin", "script" or "opening" (see CreditMovement).
+    reason: str
+    # The task of a "task" or "refund" movement.
+    task_id: str | None
+    created_at: datetime.datetime
+
+
+class CreditHistoryOut(BaseModel):
+    movements: list[CreditMovementItem]
+    has_more: bool
+
+
+async def credit_history_page(account: Account, before: int | None, limit: int) -> CreditHistoryOut:
+    """
+    A page of the account's credit history, the latest movements first: the
+    first one, or the one with the movements before the movement `before`,
+    as task_history_page() pages the tasks. The pending tasks past their
+    deadline are refreshed first, so their refunds show.
+    """
+    await refresh_overdue_tasks(account.google_id)
+    movements = CreditMovement.filter(account_id=account.id)
+    if before is not None:
+        last = await CreditMovement.get_or_none(id=before, account_id=account.id)
+        if last is None:
+            raise HTTPException(status_code=404, detail="Credit movement not found")
+        movements = movements.filter(
+            Q(created_at__lt=last.created_at) | Q(created_at=last.created_at, id__lt=last.id),
+            created_at__lte=last.created_at
+        )
+
+    # One more than the page: if it's there, there are more.
+    rows = await movements.order_by("-created_at", "-id").limit(limit + 1)
+    return CreditHistoryOut(
+        movements=[
+            CreditMovementItem(
+                id=movement.id,
+                amount=movement.amount,
+                balance=movement.balance,
+                reason=movement.reason,
+                task_id=movement.task_id,
+                created_at=movement.created_at,
+            )
+            for movement in rows[:limit]
+        ],
+        has_more=len(rows) > limit
+    )
+
+
+@app.get("/user/credit_history", response_model=CreditHistoryOut)
+async def credit_history(
+    before: CreditsBefore = None,
+    limit: CreditsLimit = CREDIT_HISTORY_LIMIT,
+    user: OpenID = Depends(get_logged_user)
+        ):
+    """Retrieve a page of the logged user's credit movements, the latest first."""
+    account = await Account.get(google_id=user.id)
+    return await credit_history_page(account, before, limit)
+
+
+@app.get("/api/credit_history", response_model=CreditHistoryOut)
+async def credit_history_with_api_key(
+    before: CreditsBefore = None,
+    limit: CreditsLimit = CREDIT_HISTORY_LIMIT,
+    account: Account = Depends(get_api_key_account)
+        ):
+    """
+    List each change of the account's credits, the latest first, with the
+    balance it left: its initial credits, each task's cost and each refund,
+    and the ones added to it. A page at a time: while has_more is true,
+    there are older ones; for the next page, send the id of the last
+    movement of this one as before.
+    """
+    return await credit_history_page(account, before, limit)
 
 
 @app.get("/user/api_key", response_model=dict)
@@ -946,7 +1045,7 @@ async def start_task(
                 status_code=429,
                 detail=f"Too many pending tasks: an account can have up to {MAX_PENDING_TASKS}. Wait for one to end."
             )
-        if not await Account.reserve_credits(account.google_id, cost):
+        if not await Account.reserve_credits(account.id, cost, task_id):
             raise HTTPException(status_code=403, detail="Not enough credits")
         await TaskHistory.create(
             user=account,
@@ -966,7 +1065,7 @@ async def start_task(
 
         # Redis may have queued it anyway, and only lost its reply. Give
         # the task up, unless a worker already started it.
-        if await TaskHistory.give_up(task_id, account.google_id):
+        if await TaskHistory.give_up(task_id):
             raise HTTPException(
                 status_code=500,
                 detail="Task initiation failed"
@@ -1399,13 +1498,15 @@ async def admin_accounts(search: str = "", admin: OpenID = Depends(get_admin)):
 async def admin_add_credits(account_id: int, body: CreditsIn, admin: OpenID = Depends(get_admin)):
     """
     Add credits to an account in a single UPDATE, like scripts/add_credits.py,
-    so it can't undo a credit that a task reserves meanwhile.
+    so it can't undo a credit that a task reserves meanwhile. Its credit
+    history shows them as the admin's, without saying which admin: the log does.
     """
-    if not await Account.filter(id=account_id).update(credits=F("credits") + body.credits):
+    balance = await Account.change_credits(account_id, body.credits, "admin")
+    if balance is None:
         raise HTTPException(status_code=404, detail="Account not found")
     account = await Account.get(id=account_id)
     logger.info("%s gave %d credits to %s", admin.email, body.credits, account.email)
-    return {"credits": account.credits}
+    return {"credits": balance}
 
 
 @app.delete("/admin/accounts/{account_id}", include_in_schema=False)

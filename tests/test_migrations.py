@@ -90,6 +90,10 @@ async def test_a_database_from_before_the_migrations_keeps_its_data(services, st
                 assert (r.json()["status"], r.json()["result"], r.json()["cost"]) == ("SUCCESS", 2.0, 1)
                 r = await anon.get("/api/user_credits", headers=headers)
                 assert r.json() == {"credits": 5}
+                # Its credit history starts with its balance, once.
+                r = await anon.get("/api/credit_history", headers=headers)
+                history = [(m["reason"], m["amount"], m["balance"]) for m in r.json()["movements"]]
+                assert history == [("opening", 5, 5)]
             rows = await db.fetch("SELECT app, name FROM tortoise_migrations ORDER BY name")
             assert [tuple(row) for row in rows] == MIGRATIONS
     finally:

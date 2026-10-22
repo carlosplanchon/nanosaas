@@ -57,24 +57,38 @@ class Account(Model):
         return self.api_key_hash[:8] if self.api_key_hash else None
 
     @classmethod
-    async def reserve_credits(cls, google_id: str, credits: int) -> bool:
+    async def change_credits(
+        cls, account_id: int, amount: int, reason: str, task_id: str | None = None
+    ) -> int | None:
         """
-        Take credits in a single UPDATE, so concurrent requests
-        can't spend more credits than the account has.
-        Returns False if it didn't have that many.
+        Add credits to an account, or take them with a negative amount, and
+        record the movement (CreditMovement), with the balance it leaves, in
+        the same transaction: every change of the credits goes through here.
+        Taking them is a single UPDATE that needs the account to have them, so
+        concurrent requests can't spend more credits than it has.
+        Returns the balance, or None if there's no such account, or it didn't
+        have that many credits.
         """
-        updated = await cls.filter(
-            google_id=google_id,
-            credits__gte=credits
-        ).update(credits=F("credits") - credits)
-        return updated == 1
+        async with in_transaction():
+            enough = {"credits__gte": -amount} if amount < 0 else {}
+            if not await cls.filter(id=account_id, **enough).update(credits=F("credits") + amount):
+                return None
+            # This transaction's own update: no other one changes it before this one ends.
+            [balance] = await cls.filter(id=account_id).values_list("credits", flat=True)
+            await CreditMovement.create(
+                account_id=account_id, amount=amount, balance=balance, reason=reason, task_id=task_id
+            )
+        return balance
 
     @classmethod
-    async def refund_credits(cls, google_id: str, credits: int) -> None:
-        """Give back credits taken with reserve_credits()."""
-        await cls.filter(google_id=google_id).update(
-            credits=F("credits") + credits
-        )
+    async def reserve_credits(cls, account_id: int, credits: int, task_id: str) -> bool:
+        """Take a task's cost, when it starts. Returns False if the account didn't have that many."""
+        return await cls.change_credits(account_id, -credits, "task", task_id) is not None
+
+    @classmethod
+    async def refund_credits(cls, account_id: int, credits: int, task_id: str) -> None:
+        """Give back the credits a task took with reserve_credits()."""
+        await cls.change_credits(account_id, credits, "refund", task_id)
 
     @classmethod
     async def delete_with_tasks(cls, google_id: str) -> bool:
@@ -98,6 +112,33 @@ class Account(Model):
             # The foreign key deletes, on cascade, the tasks created meanwhile.
             await cls.filter(id=account.id).delete()
         return True
+
+
+class CreditMovement(Model):
+    """
+    A change of an account's credits, with the balance it left.
+
+    Account.change_credits() records each one, in the transaction of the
+    change: the latest movement's balance is the account's credits.
+    """
+    id = fields.IntField(primary_key=True)
+    account = fields.ForeignKeyField("models.Account", on_delete=fields.CASCADE, related_name="credit_movements")
+    # Positive when credits come in, negative when they go out.
+    amount = fields.IntField()
+    balance = fields.IntField()
+    # Why: "initial" (INITIAL_CREDITS, for a new account), "task" (a task's
+    # cost, when it starts), "refund" (given back, when it fails, is canceled
+    # or gets lost), "admin" (from the admin page), "script" (from
+    # scripts/add_credits.py), or "opening" (the balance when the history began).
+    reason = fields.CharField(max_length=20)
+    # The task of a "task" or "refund" movement.
+    task_id = fields.CharField(max_length=255, null=True)
+    created_at = fields.DatetimeField(auto_now_add=True)
+
+    class Meta:
+        # For the pages of an account's history, the latest first, like the tasks'.
+        # With the column of the account, which the migration takes as it is.
+        indexes = (("account_id", "created_at", "id"),)
 
 
 class DeletedAccount(Model):
@@ -232,11 +273,12 @@ class TaskHistory(Model):
         return updated == 1
 
     @classmethod
-    async def give_up(cls, task_id: str, google_id: str) -> bool:
+    async def give_up(cls, task_id: str) -> bool:
         """
         Delete a task that couldn't be queued and give its credits back,
         unless a worker already started it: then Redis did queue it, and
-        only the reply to the API was lost.
+        only the reply to the API was lost. The credit history keeps both
+        movements, the cost and its refund.
         Returns False if a worker started it.
         """
         async with in_transaction():
@@ -246,7 +288,7 @@ class TaskHistory(Model):
             )
             if task is not None:
                 await task.delete()
-                await Account.refund_credits(google_id, task.cost)
+                await Account.refund_credits(task.user_id, task.cost, task_id)
 
         return task is not None
 
@@ -267,7 +309,7 @@ class TaskHistory(Model):
             if canceled:
                 task = await cls.get(task_id=task_id)
                 await WebhookDelivery.record(task)
-                await Account.refund_credits(account.google_id, task.cost)
+                await Account.refund_credits(account.id, task.cost, task_id)
 
         return canceled == 1
 
@@ -306,8 +348,7 @@ class TaskHistory(Model):
                 await WebhookDelivery.record(task)
                 if error is not None:
                     # Only successful tasks are charged.
-                    await task.fetch_related("user")
-                    await Account.refund_credits(task.user.google_id, task.cost)
+                    await Account.refund_credits(task.user_id, task.cost, task_id)
 
         return updated == 1
 

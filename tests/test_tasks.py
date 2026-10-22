@@ -67,7 +67,8 @@ async def test_task_details_page_fetches_its_data(db, account, user):
     task_id = await insert_task(db, account, status="SUCCESS", result=2.0)
     page = await user.get(f"/task_details/{task_id}")
     assert page.status_code == 200
-    # Its script, which takes the ROOT_PATH from the page.
+    # Its script, which takes the ROOT_PATH and the task's ID from the page.
+    assert f'data-task-id="{task_id}"' in page.text
     root_prefix = re.search(r'<html lang="en" data-root-prefix="([^"]*)">', page.text).group(1)
     script = await user.get(re.search(r'<script src="([^"]*/task_details\.js\?v=[^"]+)"', page.text).group(1))
     url = re.search(r"fetch\(`([^`]+)`\)", script.text).group(1)

@@ -10,7 +10,7 @@ from fastapi import HTTPException
 from taskiq import TaskiqResult
 from tortoise import Tortoise
 
-from tests.helpers import insert_task, wait_for_row
+from tests.helpers import insert_task, movements, wait_for_row
 
 pytestmark = [pytest.mark.anyio, pytest.mark.usefixtures("worker")]
 
@@ -77,10 +77,14 @@ async def test_each_task_gives_back_what_it_cost_when_it_started(app_module, db,
     # Given up by the API, which couldn't queue it.
     await Tortoise.init(config=app_module.TORTOISE_ORM)
     try:
-        assert await app_module.TaskHistory.give_up(given_up, account.google_id)
+        assert await app_module.TaskHistory.give_up(given_up)
     finally:
         await Tortoise.close_connections()
     assert (await account.credits(), await history_row_count(db, account)) == (13, 2)
+    # Each refund is in the credit history, with its task and the balance it left.
+    assert await movements(db, account) == [
+        ("refund", 4, 5, canceled), ("refund", 4, 9, failed), ("refund", 4, 13, given_up),
+    ]
 
 
 async def test_the_panel_the_docs_and_the_history_show_the_costs(app_module, db, account, user, anon):

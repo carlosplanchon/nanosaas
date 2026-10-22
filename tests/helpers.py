@@ -117,6 +117,15 @@ async def attempts(db, task_id):
     return await db.fetchval("SELECT attempts FROM taskhistory WHERE task_id = $1", task_id)
 
 
+async def movements(db, account):
+    """The account's credit history, the oldest first: (reason, amount, balance, task_id) for each change."""
+    rows = await db.fetch(
+        "SELECT reason, amount, balance, task_id FROM creditmovement WHERE account_id = $1 ORDER BY created_at, id",
+        account.id,
+    )
+    return [tuple(row) for row in rows]
+
+
 async def age_task(db, task_id, age):
     """Move a task's creation back, as if it had been queued `age` ago."""
     await db.execute(

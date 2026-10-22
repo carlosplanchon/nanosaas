@@ -53,6 +53,21 @@ function initialValue(parameter) {
     return ['json', 'select'].includes(kind) ? JSON.stringify(parameter.default) : parameter.default;
 }
 
+// Why the credits changed, by the movement's reason.
+const REASONS = {
+    initial: 'Initial credits',
+    task: 'Cost of the task',
+    refund: 'Given back',
+    admin: 'Added by an admin',
+    script: 'Added',
+    opening: 'Balance when the history began',
+};
+
+// The rows of a page of a history, with their dates as the browser shows them.
+function withLocalDates(rows) {
+    return rows.map(row => ({ ...row, created_at: new Date(row.created_at).toLocaleString() }));
+}
+
 function taskManager() {
     let timer = null;
 
@@ -66,6 +81,11 @@ function taskManager() {
         pages: [null],
         hasMore: false, // Whether there are older tasks
         credits: 0, // Initialize credits
+        // The page of the credit history shown, as the movement its movements come
+        // before, like the tasks' pages.
+        movements: [],
+        movementPages: [null],
+        moreMovements: false,
         // The task being started, and the Idempotency-Key it's sent with: sent
         // again before an answer, after a double click or a network error, it
         // gets the same task instead of starting and paying for another one.
@@ -85,11 +105,57 @@ function taskManager() {
             });
         },
 
+        // For the template, whose expressions can only use the component's data and
+        // methods: Alpine's CSP build doesn't run any other JavaScript in them.
+        formatParameters,
+        inputKind,
+
+        chosenParameters() {
+            return this.chosenTask()?.parameters ?? [];
+        },
+
+        chosenDescription() {
+            return this.chosenTask()?.description ?? '';
+        },
+
+        chosenCost() {
+            return formatCost(this.chosenTask()?.cost);
+        },
+
+        // A number's or a text's input, typed as its kind.
+        typedInput(parameter) {
+            return ['number', 'text'].includes(inputKind(parameter));
+        },
+
+        // An option's value: its JSON, so a number stays a number.
+        optionValue(option) {
+            return JSON.stringify(option);
+        },
+
+        // A result's JSON, with its colors, in the element.
+        showJson(element, value) {
+            element.innerHTML = highlightJson(value);
+        },
+
+        // The page of a task, or of a movement's task.
+        detailsUrl(item) {
+            return `${ROOT_PREFIX}/task_details/${encodeURIComponent(item.task_id)}`;
+        },
+
+        formatAmount(amount) {
+            return amount > 0 ? `+${amount}` : String(amount);
+        },
+
+        reasonText(reason) {
+            return REASONS[reason] ?? reason;
+        },
+
         // Every 5 seconds while a task is pending, every 30 otherwise.
         async refresh() {
             // History first, so the credits count the refunds of the finished tasks it shows.
             await this.fetchTaskHistory();
             await this.fetchCredits();
+            await this.fetchCreditHistory();
             if (document.hidden) return;
 
             const busy = this.tasks.some(task => task.status === 'PENDING');
@@ -125,10 +191,7 @@ function taskManager() {
                 if (before !== this.pages.at(-1)) return;
                 if (response.ok) {
                     const data = await response.json();
-                    this.tasks = data.tasks.map(task => ({
-                        ...task,
-                        created_at: new Date(task.created_at).toLocaleString()
-                    }));
+                    this.tasks = withLocalDates(data.tasks);
                     this.hasMore = data.has_more;
                 } else {
                     console.error('Failed to fetch task history');
@@ -149,13 +212,44 @@ function taskManager() {
             this.refresh();
         },
 
+        // The page of the credit history shown, like the tasks'.
+        async fetchCreditHistory() {
+            const before = this.movementPages.at(-1);
+            const query = before ? `?before=${before}` : '';
+            try {
+                const response = await fetch(`${ROOT_PREFIX}/user/credit_history${query}`);
+                if (sessionExpired(response)) return;
+                if (before !== this.movementPages.at(-1)) return;
+                if (response.ok) {
+                    const data = await response.json();
+                    this.movements = withLocalDates(data.movements);
+                    this.moreMovements = data.has_more;
+                } else {
+                    console.error('Failed to fetch the credit history');
+                }
+            } catch (error) {
+                console.error('Error fetching the credit history:', error);
+            }
+        },
+
+        olderMovements() {
+            this.movementPages.push(this.movements.at(-1).id);
+            this.fetchCreditHistory();
+        },
+
+        newerMovements() {
+            this.movementPages.pop();
+            this.fetchCreditHistory();
+        },
+
         chosenTask() {
             return this.taskTypes.find(taskType => taskType.name === this.chosen);
         },
 
         resetValues() {
-            const parameters = this.chosenTask()?.parameters ?? [];
-            this.values = Object.fromEntries(parameters.map(parameter => [parameter.name, initialValue(parameter)]));
+            this.values = Object.fromEntries(
+                this.chosenParameters().map(parameter => [parameter.name, initialValue(parameter)])
+            );
         },
 
         async fetchTaskTypes() {
@@ -207,8 +301,9 @@ function taskManager() {
                 if (sessionExpired(response)) return;
 
                 if (response.ok) {
-                    // Back to the first page, which has the new task.
+                    // Back to the first pages, which have the new task and its cost.
                     this.pages = [null];
+                    this.movementPages = [null];
                     this.refresh(); // Refresh task history and credits after starting a new task
                 } else if (response.status === 403) {
                     alert('Not enough credits');
@@ -246,3 +341,15 @@ function taskManager() {
         }
     };
 }
+
+// Alpine.js, which loads after this script, finds the component by its name.
+document.addEventListener('alpine:init', () => {
+    Alpine.data('taskManager', taskManager);
+});
+
+// Deleting the account asks first.
+document.getElementById('delete-account').addEventListener('submit', event => {
+    if (!confirm('Delete your account, with its tasks, its credits, its API key and its webhook? This cannot be undone.')) {
+        event.preventDefault();
+    }
+});

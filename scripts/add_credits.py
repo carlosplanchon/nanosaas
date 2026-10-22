@@ -15,7 +15,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tortoise import Tortoise
-from tortoise.expressions import F
 
 from shared import TORTOISE_ORM
 from web.db_models import Account
@@ -25,10 +24,11 @@ async def add_credits(email: str, credits: int) -> int | None:
     """Add the credits, and return the new balance, or None if there's no such account."""
     await Tortoise.init(config=TORTOISE_ORM)
     try:
-        # In a single UPDATE, like Account.reserve_credits(), so it can't undo a task's.
-        if not await Account.filter(email=email).update(credits=F("credits") + credits):
+        account = await Account.get_or_none(email=email)
+        if account is None:
             return None
-        return (await Account.get(email=email)).credits
+        # In a single UPDATE, so it can't undo a task's, and in the account's credit history.
+        return await Account.change_credits(account.id, credits, "script")
     finally:
         await Tortoise.close_connections()
 

@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.helpers import movements
+
 pytestmark = pytest.mark.anyio
 
 REPO = Path(__file__).resolve().parent.parent
@@ -24,6 +26,7 @@ async def test_it_adds_credits_to_the_account_of_an_email(server, account):
     r = add_credits(server, email, "25")
     assert (r.returncode, r.stdout) == (0, f"{email} has 30 credits now.\n")
     assert await account.credits() == 30
+    assert await movements(account.db, account) == [("script", 25, 30, None)]
 
 
 async def test_it_says_when_there_is_no_such_account(server, account):

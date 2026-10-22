@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <title>User Panel</title>
     <link rel="icon" type="image/svg+xml" href="{{ static_url('nanosaas_logo.svg') }}">
-    <!-- Include Alpine.js -->
-    <script src="{{ static_url('alpine-3.17.4.min.js') }}" defer></script>
+    <!-- Include Alpine.js, its build that works without eval -->
+    <script src="{{ static_url('alpine-csp-3.17.4.min.js') }}" defer></script>
     <!-- Include Tailwind CSS -->
     <link rel="stylesheet" href="{{ static_url('tailwind.css') }}">
     <!-- Include the script that colors the results' JSON -->
@@ -36,8 +36,9 @@
             </div>
         </div>
 
-        <!-- Alpine.js interactive scope -->
-        <div x-data="taskManager()" class="bg-white p-6 rounded-lg shadow-md w-full mx-auto">
+        <!-- Alpine.js interactive scope. Its expressions use only the component's data and
+             methods, in user_panel.js: Alpine's CSP build doesn't run any other JavaScript. -->
+        <div x-data="taskManager" class="bg-white p-6 rounded-lg shadow-md w-full mx-auto">
             <div class="mb-6 text-center">
                 <span class="text-gray-700 font-semibold">Remaining Credits: </span>
                 <span x-text="credits" class="text-blue-500 font-bold"></span>
@@ -45,12 +46,12 @@
 
             <!-- Info Box: the chosen task's description, and its cost -->
             <div x-show="chosenTask()" class="bg-blue-100 border border-blue-300 text-blue-700 p-4 rounded-md mb-6">
-                <p x-show="chosenTask()?.description" x-text="chosenTask()?.description" class="mb-2"></p>
-                <p x-text="formatCost(chosenTask()?.cost)" class="text-sm"></p>
+                <p x-show="chosenDescription()" x-text="chosenDescription()" class="mb-2"></p>
+                <p x-text="chosenCost()" class="text-sm"></p>
             </div>
 
             <!-- Task Input: the chosen task, and an input for each of its parameters -->
-            <div class="flex flex-col md:flex-row items-center justify-center gap-4 mb-6">
+            <div class="flex flex-col md:flex-row md:flex-wrap items-center justify-center gap-4 mb-6">
                 <label class="block text-gray-700">
                     Task:
                     <select x-model="chosen" x-on:change="resetValues()" class="mt-1 p-2 border rounded-md bg-white w-full md:w-48">
@@ -59,14 +60,14 @@
                         </template>
                     </select>
                 </label>
-                <template x-for="parameter in chosenTask()?.parameters ?? []" :key="parameter.name">
+                <template x-for="parameter in chosenParameters()" :key="parameter.name">
                     <label class="block text-gray-700">
                         <span x-text="parameter.name"></span>:
                         <template x-if="inputKind(parameter) === 'select'">
                             <select x-model="values[parameter.name]" class="mt-1 p-2 border rounded-md bg-white w-full md:w-48">
                                 <option value=""></option>
-                                <template x-for="option in parameter.options" :key="JSON.stringify(option)">
-                                    <option :value="JSON.stringify(option)" :selected="JSON.stringify(option) === values[parameter.name]" x-text="option"></option>
+                                <template x-for="option in parameter.options" :key="optionValue(option)">
+                                    <option :value="optionValue(option)" :selected="optionValue(option) === values[parameter.name]" x-text="option"></option>
                                 </template>
                             </select>
                         </template>
@@ -76,7 +77,7 @@
                         <template x-if="inputKind(parameter) === 'json'">
                             <textarea x-model="values[parameter.name]" placeholder="JSON" class="mt-1 p-2 border rounded-md w-full md:w-48"></textarea>
                         </template>
-                        <template x-if="['number', 'text'].includes(inputKind(parameter))">
+                        <template x-if="typedInput(parameter)">
                             <input :type="inputKind(parameter)" x-model="values[parameter.name]" class="mt-1 p-2 border rounded-md w-full md:w-48">
                         </template>
                     </label>
@@ -113,10 +114,10 @@
                                         <button x-on:click="cancelTask(task)" class="block mx-auto text-sm text-red-600 hover:underline">Cancel</button>
                                     </template>
                                 </td>
-                                <td class="border p-2 text-center" x-html="highlightJson(task.result)"></td>
+                                <td class="border p-2 text-center" x-effect="showJson($el, task.result)"></td>
                                 <td class="border p-2 text-center" x-text="task.created_at"></td>
                                 <td class="border p-2 text-center">
-                                    <a :href="`{{ root_prefix }}/task_details/${task.task_id}`" class="text-blue-500 hover:underline">View Details</a>
+                                    <a :href="detailsUrl(task)" class="text-blue-500 hover:underline">View Details</a>
                                 </td>
                             </tr>
                         </template>
@@ -129,12 +130,47 @@
                 <button x-show="pages.length > 1" x-on:click="newerTasks()" class="text-blue-500 hover:underline">&larr; Newer tasks</button>
                 <button x-show="hasMore" x-on:click="olderTasks()" class="ml-auto text-blue-500 hover:underline">Older tasks &rarr;</button>
             </div>
+
+            <!-- Each change of the credits, with the balance it left -->
+            <h2 class="mt-10 mb-4 text-xl font-bold text-gray-700">Credit History</h2>
+            <div class="overflow-x-auto">
+                <table class="table-auto w-full border-collapse border border-gray-300">
+                    <thead>
+                        <tr class="bg-gray-200">
+                            <th class="border p-2">Date</th>
+                            <th class="border p-2">Change</th>
+                            <th class="border p-2">Balance</th>
+                            <th class="border p-2">Why</th>
+                            <th class="border p-2">Task</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <template x-for="movement in movements" :key="movement.id">
+                            <tr class="hover:bg-gray-100">
+                                <td class="border p-2 text-center" x-text="movement.created_at"></td>
+                                <td class="border p-2 text-center font-semibold" :class="movement.amount < 0 ? 'text-red-600' : 'text-green-600'" x-text="formatAmount(movement.amount)"></td>
+                                <td class="border p-2 text-center" x-text="movement.balance"></td>
+                                <td class="border p-2 text-center" x-text="reasonText(movement.reason)"></td>
+                                <td class="border p-2 text-center">
+                                    <a x-show="movement.task_id" :href="detailsUrl(movement)" x-text="movement.task_id" class="text-blue-500 hover:underline"></a>
+                                </td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+            <p x-show="movements.length === 0" class="mt-2 text-sm text-gray-500">No changes yet.</p>
+
+            <!-- The pages of the credit history -->
+            <div class="flex mt-4">
+                <button x-show="movementPages.length > 1" x-on:click="newerMovements()" class="text-blue-500 hover:underline">&larr; Newer changes</button>
+                <button x-show="moreMovements" x-on:click="olderMovements()" class="ml-auto text-blue-500 hover:underline">Older changes &rarr;</button>
+            </div>
         </div>
 
-        <!-- Deleting the account: at the end, apart from the other buttons. It asks
-             first, with Alpine.js: the Content-Security-Policy blocks onsubmit. -->
-        <form method="post" action="{{ root_prefix }}/user/delete_account" class="my-10 text-center"
-              x-data x-on:submit="confirm('Delete your account, with its tasks, its credits and its API key? This cannot be undone.') || $event.preventDefault()">
+        <!-- Deleting the account: at the end, apart from the other buttons. Its
+             script asks first: the Content-Security-Policy blocks onsubmit. -->
+        <form method="post" action="{{ root_prefix }}/user/delete_account" id="delete-account" class="my-10 text-center">
             <button class="text-sm text-red-600 hover:underline">Delete Account</button>
         </form>
     </div>

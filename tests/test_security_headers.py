@@ -19,10 +19,10 @@ HEADERS = {
     "x-frame-options": "DENY",
     "referrer-policy": "same-origin",
 }
-# Only this server's files, without inline scripts ('unsafe-eval' is for Alpine.js), and in no frame.
+# Only this server's files, without inline scripts nor eval, and in no frame.
 POLICY = {
     "default-src": ["'self'"],
-    "script-src": ["'self'", "'unsafe-eval'"],
+    "script-src": ["'self'"],
     "object-src": ["'none'"],
     "base-uri": ["'none'"],
     "form-action": ["'self'"],
@@ -82,7 +82,7 @@ async def test_with_a_root_path_too(prefixed_server, account):
 
 def test_the_templates_have_no_inline_scripts_or_styles():
     # The policy blocks them: the scripts are files in web/static, and the
-    # attributes of Alpine.js handle the events.
+    # attributes of Alpine.js, or the scripts' listeners, handle the events.
     blocked = {
         "inline script": r"<script(?![^>]*\ssrc=)[^>]*>",
         "event handler attribute": r"\son[a-z]+\s*=",
@@ -93,3 +93,25 @@ def test_the_templates_have_no_inline_scripts_or_styles():
         text = template.read_text()
         for name, pattern in blocked.items():
             assert not re.search(pattern, text), f"{name} in {template.name}"
+
+
+def test_the_alpine_expressions_need_no_eval():
+    # The pages load Alpine.js's CSP build, which reads the expressions of its
+    # attributes itself: they can use only the component's data and methods, and
+    # it fails on the rest, in the browser. That code goes in the pages' scripts.
+    unsupported = {
+        "arrow function": r"=>",
+        "template literal": r"`",
+        "optional chaining": r"\?\.",
+        "nullish coalescing": r"\?\?",
+        "new": r"\bnew\s",
+        "global": r"\b(JSON|Math|Date|Object|window|document|console|confirm|alert|encodeURIComponent)\b",
+    }
+    for template in (REPO / "web" / "templates").glob("*.html"):
+        text = template.read_text()
+        assert "x-html" not in text, f"x-html, which the CSP build doesn't have, in {template.name}"
+        if "x-data" in text:
+            assert "alpine-csp-" in text, f"{template.name} doesn't load the CSP build"
+        for expression in re.findall(r'\s(?:x-[\w.:-]+|:[\w.-]+|@[\w.:-]+)="([^"]*)"', text):
+            for name, pattern in unsupported.items():
+                assert not re.search(pattern, expression), f"{name} in {template.name}: {expression}"

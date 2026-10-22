@@ -12,7 +12,7 @@ function sessionExpired(response) {
     return true;
 }
 
-function taskDetails(taskId) {
+function taskDetails() {
     return {
         task: {
             task_id: '',
@@ -23,7 +23,24 @@ function taskDetails(taskId) {
             result: '',
             created_at: ''
         },
-        fetchTaskDetails() {
+
+        // The task's ID is in the page, in its element's data-task-id.
+        init() {
+            this.fetchTaskDetails(this.$el.dataset.taskId);
+        },
+
+        // For the template, whose expressions can only use the component's data and
+        // methods: Alpine's CSP build doesn't run any other JavaScript in them.
+        parametersText() {
+            return JSON.stringify(this.task.parameters, null, 2);
+        },
+
+        // The result's JSON, with its colors, in the element.
+        showJson(element, value) {
+            element.innerHTML = highlightJson(value);
+        },
+
+        fetchTaskDetails(taskId) {
             const updateInterval = 5000; // 5 seconds
             let timer = null;
             // The status is empty until the first answer, and PENDING until the task ends.
@@ -64,3 +81,8 @@ function taskDetails(taskId) {
         }
     };
 }
+
+// Alpine.js, which loads after this script, finds the component by its name.
+document.addEventListener('alpine:init', () => {
+    Alpine.data('taskDetails', taskDetails);
+});

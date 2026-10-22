@@ -7,7 +7,7 @@ import hashlib
 
 import pytest
 
-from tests.helpers import ADMIN, ADMIN_EMAIL, client_for, insert_task, session_cookie
+from tests.helpers import ADMIN, ADMIN_EMAIL, client_for, insert_task, movements, session_cookie
 
 pytestmark = [pytest.mark.anyio, pytest.mark.usefixtures("worker")]
 
@@ -64,6 +64,7 @@ async def test_an_admin_finds_an_account_and_gives_it_credits(admin, db, account
     r = await admin.post(f"/admin/accounts/{account.id}/credits", json={"credits": 10})
     assert (r.status_code, r.json()) == (200, {"credits": 15})
     assert await account.credits() == 15
+    assert await movements(db, account) == [("admin", 10, 15, None)]
 
     r = await admin.post(f"/admin/accounts/{account.id}/credits", json={"credits": 0})
     assert r.status_code == 422

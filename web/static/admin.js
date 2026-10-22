@@ -14,6 +14,12 @@ function accountManager() {
             this.fetchAccounts();
         },
 
+        // For the template, whose expressions can't create a Date: Alpine's CSP build
+        // doesn't run any JavaScript but the component's methods.
+        formatDate(value) {
+            return new Date(value).toLocaleString();
+        },
+
         // The latest accounts, or the ones with the search in their email.
         async fetchAccounts() {
             const response = await fetch(`${ROOT_PREFIX}/admin/accounts?search=${encodeURIComponent(this.search)}`);
@@ -50,3 +56,8 @@ function accountManager() {
         }
     };
 }
+
+// Alpine.js, which loads after this script, finds the component by its name.
+document.addEventListener('alpine:init', () => {
+    Alpine.data('accountManager', accountManager);
+});
