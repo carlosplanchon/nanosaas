@@ -1,9 +1,10 @@
 # Weekly pull requests with the new versions of the dependencies, which are
-# pinned to exact ones: the Python packages of requirements*.txt, and the
-# actions of the workflows. The tests run on each pull request.
+# pinned to exact ones: the Python packages of pyproject.toml, with uv.lock,
+# which pins the packages they need too, and the actions of the workflows.
+# The tests run on each pull request.
 version: 2
 updates:
-  - package-ecosystem: "pip"
+  - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"

@@ -1,0 +1,52 @@
+[project]
+name = "nanosaas"
+# The release's version, tagged like v1.0.0: /docs shows it.
+version = "1.0.0"
+description = "Background tasks for your users: a form and an API to start them, a history of their results, and credits to pay for them."
+license = "MIT"
+# The oldest Python with tomllib.
+requires-python = ">=3.11"
+# Pinned: uv.lock pins the packages they need too, and Dependabot updates them
+# all every week (.github/dependabot.yml).
+dependencies = [
+    "fastapi==0.143.3",
+    "uvicorn==0.54.0",
+    "jinja2==3.1.6",
+    # FastAPI doesn't cap these, so pin them too:
+    "starlette==1.8.0",
+    "pydantic==2.14.1",
+    # Single sign-on:
+    "fastapi-sso==0.23.0",
+    "PyJWT==2.15.1",
+    # Database:
+    "tortoise-orm==1.1.9",
+    "asyncpg==0.32.0",
+    # Background tasks:
+    "taskiq==0.13.0",
+    "taskiq-redis==1.2.4",
+    "redis==8.1.0",
+    # Sends the webhooks:
+    "httpx==0.28.1",
+]
+
+# Only to develop and test it: uv sync installs them, unless with --no-dev, as the Dockerfile does.
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+    # Starts PostgreSQL and Redis in Docker for the tests:
+    "testcontainers==4.15.0",
+    # Checks the webhooks' signatures, as their receivers would:
+    "standardwebhooks==1.1.0",
+]
+
+[tool.uv]
+# An application, not a package: uv installs its dependencies, but not the app itself.
+package = false
+
+[tool.pytest]
+testpaths = ["tests"]
+pythonpath = ["."]
+filterwarnings = [
+    # Starlette 1.x suggests httpx2 for its TestClient; httpx still works.
+    'ignore:Using `httpx` with `starlette.testclient` is deprecated',
+]

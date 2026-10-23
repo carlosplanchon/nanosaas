@@ -19,6 +19,8 @@ import secrets
 
 import sys
 
+import tomllib
+
 import typing
 
 import uuid
@@ -38,11 +40,9 @@ from fastapi.responses import StreamingResponse
 from fastapi.security import APIKeyCookie
 from fastapi.security import APIKeyHeader, APIKeyQuery
 
-# pip install fastapi-sso
 from fastapi_sso.sso.google import GoogleSSO
 from fastapi_sso.sso.base import OpenID
 
-# pip install PyJWT
 import jwt
 
 from fastapi.templating import Jinja2Templates
@@ -131,8 +131,9 @@ async def lifespan(app: FastAPI):
             await broker.shutdown()
 
 
-# NanoSaaS's version: that of its release, tagged like v1.0.0. /docs shows it.
-VERSION = "1.0.0"
+# NanoSaaS's version, from pyproject.toml: that of its release, tagged like
+# v1.0.0. /docs shows it.
+VERSION = tomllib.loads((Path(__file__).parent / "pyproject.toml").read_text())["project"]["version"]
 
 app = FastAPI(
     root_path=root_prefix,

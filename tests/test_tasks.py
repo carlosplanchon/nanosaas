@@ -5,6 +5,7 @@ import re
 import sys
 import time
 import tomllib
+from pathlib import Path
 
 import pytest
 from tortoise import Tortoise
@@ -149,10 +150,12 @@ async def test_the_panel_gets_the_input_type_of_each_parameter(app_module):
     ]
 
 
-async def test_the_docs_show_the_version(anon, app_module):
-    # VERSION, in main_api.py: the one of the release, tagged like v1.0.0.
+async def test_the_docs_show_the_version(anon):
+    # The one of pyproject.toml: the release's, tagged like v1.0.0.
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    version = tomllib.loads(pyproject.read_text())["project"]["version"]
     info = (await anon.get("/openapi.json")).json()["info"]
-    assert (info["title"], info["version"]) == ("NanoSaaS", app_module.VERSION)
+    assert (info["title"], info["version"]) == ("NanoSaaS", version)
 
 
 async def test_the_docs_show_each_task_with_its_parameters(anon):

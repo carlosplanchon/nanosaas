@@ -1,8 +1,0 @@
--r requirements.txt
-
-# Tests:
-pytest==9.1.1
-# Starts PostgreSQL and Redis in Docker for the tests:
-testcontainers==4.15.0
-# Checks the webhooks' signatures, as their receivers would:
-standardwebhooks==1.1.0

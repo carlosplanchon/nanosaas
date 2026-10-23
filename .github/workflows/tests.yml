@@ -28,18 +28,21 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      # uv, with that Python, and a cache of the packages it downloads.
+      - uses: astral-sh/setup-uv@v10.3.2
         with:
+          # The Dockerfile's.
+          version: "0.13.5"
           python-version: ${{ matrix.python-version }}
-          cache: pip
-          cache-dependency-path: requirements*.txt
 
+      # Exactly as uv.lock has them, with the tests': it fails if pyproject.toml
+      # changed without it.
       - name: Install dependencies
-        run: pip install -r requirements-dev.txt
+        run: uv sync --locked
 
       # The tests start PostgreSQL and Redis in Docker, which the runner has.
       - name: Run the tests
-        run: pytest --basetemp="$RUNNER_TEMP/pytest"
+        run: uv run --locked pytest --basetemp="$RUNNER_TEMP/pytest"
 
       # The API and worker logs, to see what happened when a test fails.
       - name: Upload the logs

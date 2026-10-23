@@ -1,6 +1,8 @@
 # Only what the app needs: config.toml has secrets, and is mounted when it starts.
+# Not the .venv of the host, either: the image makes its own.
 *
-!requirements.txt
+!pyproject.toml
+!uv.lock
 !*.py
 !web
 !scripts

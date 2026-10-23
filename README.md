@@ -73,14 +73,13 @@ I built the first version in three days, with almost no prior knowledge of web d
 
 ### Without Docker
 
-Requires Python 3.11 or newer, PostgreSQL and Redis 6 or newer.
+Requires [uv](https://docs.astral.sh/uv/), PostgreSQL and Redis 6 or newer. uv runs the app with Python 3.11 or newer: the machine's, or one it downloads.
 
-1. Set up the environment:
+1. Install the dependencies in `.venv`, exactly the versions of `uv.lock`:
     ```bash
-    python3 -m venv .venv
-    source .venv/bin/activate
-    pip install -r requirements.txt
+    uv sync
     ```
+    To install uv, see [its guide](https://docs.astral.sh/uv/getting-started/installation/): on Linux and macOS, `curl -LsSf https://astral.sh/uv/install.sh | sh`, or `pipx install uv`.
 
 2. In `config.toml`, point `[database]` and `[taskiq]` to your PostgreSQL and Redis:
     ```toml
@@ -100,12 +99,12 @@ Requires Python 3.11 or newer, PostgreSQL and Redis 6 or newer.
 
 3. Start the backend:
     ```bash
-    uvicorn main_api:app --reload
+    uv run uvicorn main_api:app --reload
     ```
 
-4. Start the TaskIQ worker in another terminal, with the virtual environment activated:
+4. Start the TaskIQ worker in another terminal:
     ```bash
-    taskiq worker taskiq_task:broker --receiver taskiq_task:Receiver --wait-tasks-timeout 60
+    uv run taskiq worker taskiq_task:broker --receiver taskiq_task:Receiver --wait-tasks-timeout 60
     ```
     `--receiver` makes it run one copy of each task at a time, renewing its lease while it runs, and drop the tasks that waited in the queue longer than `queue_timeout`. When you stop it, as with Ctrl+C, `--wait-tasks-timeout` gives the tasks it's running a minute to end: it stops the others, and queues them again.
 
@@ -202,7 +201,7 @@ It replaces the whole database, in a single transaction: if anything fails, the 
     ```bash
     docker compose exec api python scripts/add_credits.py user@example.com 25
     ```
-   Without Docker, run `python scripts/add_credits.py user@example.com 25` from the repository root. To look into the database itself, `docker compose exec postgres psql -U nanosaas` opens a shell in it.
+   Without Docker, run `uv run python scripts/add_credits.py user@example.com 25` from the repository root. To look into the database itself, `docker compose exec postgres psql -U nanosaas` opens a shell in it.
 
    You can also add credits from the admin page, `/admin`, after putting your email in `ADMINS`, in `config.toml`: the user panel then shows you a button to it. What counts is your account's email, which Google gave when you first logged in, and not the session's: a session signed with a leaked `JWT_SIGNING_SECRET_KEY` and your email doesn't open it. It lists the latest accounts, which you can search by email, with their credits and pending tasks. For any other user, it doesn't exist.
 
@@ -272,12 +271,13 @@ It replaces the whole database, in a single transaction: if anything fails, the 
 - The worker has a healthcheck too: each of its processes writes a heartbeat every 5 seconds while it can use PostgreSQL and Redis, and `scripts/worker_healthcheck.py` fails when one of them is more than 30 seconds old. A task with blocking code stops it too, since it holds the event loop of its process (see step 5 of Usage). `docker compose ps` shows the worker as unhealthy meanwhile, and its log says when PostgreSQL or Redis stops answering.
 - To try webhooks with a receiver on your machine, set `ALLOW_PRIVATE_WEBHOOKS = true` in `config.toml`: they can then go to http:// URLs and private addresses, like `http://127.0.0.1:9000/hook`. Don't set it on a server, where users could reach your internal services with them. With Docker, the worker sends them from its container, where `127.0.0.1` is the container itself. Each failed attempt takes a line in the worker's log, with the host, not the URL, which may have a token in it, and so does each webhook the worker disables, with its account and why.
 - To change an account's credits from your own code, like for a payment, use `Account.change_credits()` in `web/db_models.py`: it changes them in a single UPDATE, so concurrent requests can't spend more than the account has, and records the change in the account's credit history, with the reason you give it.
-- The database changes are migrations in `web/migrations/`, made with Tortoise ORM's own tool. The backend applies the new ones when it starts, and records them in the `tortoise_migrations` table. After changing the models in `web/db_models.py`, create a migration from the repository root, with the virtual environment activated (it reads `config.toml`, but doesn't connect to the database):
+- The dependencies are in `pyproject.toml`, pinned, and `uv.lock` pins the packages they need too, with their hashes, so every install, with Docker or without it, gets the same versions. To add one, put it in `dependencies`, pinned like the others, and run `uv lock`, then `uv sync`. `uv sync --locked`, as the Dockerfile and the workflow run it, fails if `pyproject.toml` changed without `uv.lock`. They use uv 0.13.5: to update it, change it in both.
+- The database changes are migrations in `web/migrations/`, made with Tortoise ORM's own tool. The backend applies the new ones when it starts, and records them in the `tortoise_migrations` table. After changing the models in `web/db_models.py`, create a migration from the repository root (it reads `config.toml`, but doesn't connect to the database):
     ```bash
-    tortoise -c shared.TORTOISE_ORM makemigrations
+    uv run tortoise -c shared.TORTOISE_ORM makemigrations
     ```
     Then restart the backend to apply it (with Docker, `docker compose up --build`). The tests fail if the models have changes without a migration.
-- Each release is a tag, like `v1.0.0`, with its notes in the repository's Releases. `VERSION`, in `main_api.py`, has its number, and `/docs` shows it. To update an installation, read the notes of the releases since yours, then bring in the code and start the app as after changing it: the backend applies the new migrations when it starts. The next notes are for installations from before the first release.
+- Each release is a tag, like `v1.0.0`, with its notes in the repository's Releases. The `version` in `pyproject.toml` has its number, and `/docs` shows it. To update an installation, read the notes of the releases since yours, then bring in the code and start the app as after changing it: the backend applies the new migrations when it starts. The next notes are for installations from before the first release.
 - A database created before the migrations already has the tables of the first one: the first time this version starts, that migration is only recorded as applied, and the later ones are applied as usual. If it's from before API keys became unique, add their index by hand:
     ```sql
     ALTER TABLE account ADD CONSTRAINT account_api_key_key UNIQUE (api_key);
@@ -298,13 +298,15 @@ It replaces the whole database, in a single transaction: if anything fails, the 
 The tests need Docker running: they start PostgreSQL and Redis in containers with [testcontainers](https://testcontainers-python.readthedocs.io/), and run the backend and a TaskIQ worker as separate processes, like in production. Your `config.toml` and your database are not touched.
 
 ```bash
-pip install -r requirements-dev.txt
-pytest
+uv sync
+uv run pytest
 ```
+
+`uv sync` installs their packages too: the `dev` group of `pyproject.toml`.
 
 They take a few minutes: the example task waits 5 seconds, and some tests wait for tasks to time out.
 
-GitHub Actions runs them with Python 3.11 and 3.15 on every push to `main` and on every pull request (`.github/workflows/tests.yml`). It also starts the app with Docker Compose, runs two tasks through the API, checks that a webhook to a private address isn't sent, and backs up and restores the database. Every week, Dependabot opens pull requests with the new versions of the Python packages and of the workflow's actions, which are pinned (`.github/dependabot.yml`), and the tests run on them. It doesn't watch Alpine.js, in `web/static/`: update it by hand, as step 7 of Usage says.
+GitHub Actions runs them with Python 3.11 and 3.15 on every push to `main` and on every pull request (`.github/workflows/tests.yml`). It also starts the app with Docker Compose, runs two tasks through the API, checks that a webhook to a private address isn't sent, and backs up and restores the database. Every week, Dependabot opens pull requests with the new versions of the Python packages, in `pyproject.toml` and `uv.lock`, and of the workflow's actions, which are pinned (`.github/dependabot.yml`), and the tests run on them. It doesn't watch Alpine.js, in `web/static/`: update it by hand, as step 7 of Usage says.
 
 ---
 
