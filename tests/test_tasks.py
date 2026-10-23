@@ -240,15 +240,17 @@ async def test_concurrent_requests_cannot_spend_more_credits_than_the_account_ha
     assert await account.credits() == 0
 
 
-async def test_regenerating_the_api_key_does_not_undo_credit_changes(account, user):
+async def test_creating_and_revoking_api_keys_does_not_undo_credit_changes(account, user):
     await account.set_credits(20)
     stop = asyncio.Event()
 
-    async def regenerate_api_key():
+    async def change_api_keys():
         while not stop.is_set():
-            await user.post("/user/api_key")
+            created = (await user.post("/user/api_keys", json={"name": "Short-lived"})).json()
+            [new] = [key for key in created["api_keys"] if key["prefix"] == created["api_key"][:8]]
+            await user.delete(f"/user/api_keys/{new['id']}")
 
-    loops = [asyncio.create_task(regenerate_api_key()) for _ in range(3)]
+    loops = [asyncio.create_task(change_api_keys()) for _ in range(3)]
     # As many as MAX_PENDING_TASKS, 10.
     rs = await asyncio.gather(
         *(user.post("/task/divide", json={"x": 6, "y": 3}) for _ in range(7)),

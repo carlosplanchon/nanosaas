@@ -3,41 +3,56 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>API Key &amp; Webhook</title>
+    <title>API Keys &amp; Webhook</title>
     <link rel="icon" type="image/svg+xml" href="{{ static_url('nanosaas_logo.svg') }}">
     <link rel="stylesheet" href="{{ static_url('tailwind.css') }}">
 </head>
 <body class="flex flex-col items-center justify-center min-h-screen py-8 px-4 bg-gray-100">
-    <div class="w-full max-w-sm p-6 bg-white border border-gray-300 rounded-lg shadow-md">
-        <div class="flex flex-col items-center">
-            <h1 class="mb-6 text-2xl font-bold text-gray-700 text-center">API Key Management</h1>
+    <div class="w-full max-w-2xl p-6 bg-white border border-gray-300 rounded-lg shadow-md">
+        <h1 class="mb-4 text-2xl font-bold text-gray-700 text-center">API Keys</h1>
+        <p class="mb-4 text-sm text-gray-500">Send one in the <code>X-API-Key</code> header of your API requests. Each one works until you revoke it: to change a key, create another one, use it in your client, and then revoke the old one. The whole key is only shown when you create it.</p>
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm text-left text-gray-700">
+                <thead>
+                    <tr class="text-gray-500">
+                        <th class="px-2 py-1">Name</th>
+                        <th class="px-2 py-1">Key</th>
+                        <th class="px-2 py-1">Created</th>
+                        <th class="px-2 py-1">Last used</th>
+                        <th class="px-2 py-1"></th>
+                    </tr>
+                </thead>
+                <tbody id="api-keys"></tbody>
+            </table>
         </div>
-        <form id="api-key-form" class="space-y-4">
-            <div>
-                <label for="api_key" class="block text-sm font-medium text-gray-700">Current API Key</label>
-                <input 
-                    type="text" 
-                    id="api_key" 
-                    name="api_key" 
-                    class="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm bg-gray-50 text-gray-500" 
-                    placeholder="Fetching API key..."
-                    readonly
+        <p id="no-api-keys" class="hidden mt-2 text-sm text-gray-500">No API keys: create one to use the API.</p>
+
+        <form id="api-key-form" class="mt-6">
+            <label for="api_key_name" class="block text-sm font-medium text-gray-700">New key</label>
+            <div class="flex gap-2 mt-1">
+                <input
+                    type="text"
+                    id="api_key_name"
+                    maxlength="50"
+                    class="block w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+                    placeholder="Its name, like the client that uses it"
                 />
-                <p class="mt-2 text-sm text-gray-500">Send it in the <code>X-API-Key</code> header of your API requests. The whole key is only shown when you generate it.</p>
+                <button type="submit" class="px-4 py-2 text-white bg-blue-500 rounded-lg hover:bg-blue-600">Create</button>
             </div>
-
-            <div class="flex justify-end">
-                <button 
-                    type="button" 
-                    id="generate-key-button"
-                    class="w-full px-4 py-2 text-white bg-blue-500 rounded-lg hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2">
-                    Generate New API Key
-                </button>
-            </div>
-
-            <div id="success-message" class="hidden text-green-600 text-sm mt-4"></div>
-            <div id="error-message" class="hidden text-red-600 text-sm mt-4"></div>
         </form>
+
+        <div id="new-api-key" class="hidden mt-4 p-4 bg-green-50 border border-green-300 rounded-md">
+            <label for="new_api_key" class="block text-sm text-green-700"><strong id="new-api-key-name"></strong>: copy it now, it won't be shown again.</label>
+            <input
+                type="text"
+                id="new_api_key"
+                class="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm sm:text-sm bg-white font-mono"
+                readonly
+            />
+        </div>
+
+        <div id="api-key-message" class="hidden text-green-600 text-sm mt-4"></div>
+        <div id="api-key-error" class="hidden text-red-600 text-sm mt-4"></div>
     </div>
 
     <div class="w-full max-w-2xl p-6 mt-6 bg-white border border-gray-300 rounded-lg shadow-md">

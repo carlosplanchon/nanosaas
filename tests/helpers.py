@@ -77,15 +77,21 @@ def stored_api_key(api_key):
 
 
 async def create_account(db, credits=5):
+    """An account, with an API key named "Test key"."""
     google_id = f"test-{uuid.uuid4()}"
-    api_key = secrets.token_hex(32)  # like generate_api_key() in main_api.py
+    api_key = secrets.token_hex(32)  # like ApiKey.generate() in web/db_models.py
     account_id = await db.fetchval(
         """
-        INSERT INTO account (google_id, email, first_name, last_name, display_name,
-                             picture, provider, created_at, credits, api_key)
-        VALUES ($1, $2, 'Test', 'User', 'Test User', 'https://example.com/picture.png',
-                'google', now(), $3, $4)
-        RETURNING id
+        WITH new_account AS (
+            INSERT INTO account (google_id, email, first_name, last_name, display_name,
+                                 picture, provider, created_at, credits)
+            VALUES ($1, $2, 'Test', 'User', 'Test User', 'https://example.com/picture.png',
+                    'google', now(), $3)
+            RETURNING id
+        )
+        INSERT INTO apikey (account_id, name, key_hash, created_at)
+        SELECT id, 'Test key', $4, now() FROM new_account
+        RETURNING account_id
         """,
         google_id, f"{google_id}@example.com", credits, stored_api_key(api_key),
     )

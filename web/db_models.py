@@ -4,6 +4,7 @@ import datetime
 import hashlib
 import json
 import logging
+import secrets
 import uuid
 
 from pydantic_core import to_jsonable_python
@@ -38,32 +39,12 @@ class Account(Model):
     provider = fields.CharField(max_length=50)
     created_at = fields.DatetimeField(auto_now_add=True)
     credits = fields.IntField(default=25)  # New accounts get INITIAL_CREDITS, set in config.toml
-    # The API key itself isn't stored: it's shown once, when generated. This
-    # keeps "first 8 characters$SHA-256" of it, in the api_key column. The
-    # prefix tells keys apart, and the unique index finds the account.
-    api_key_hash = fields.CharField(
-        max_length=255, null=True, unique=True, source_field="api_key"
-    )
     # Raised at each logout: the sessions from before it, on every device,
     # stop working (see get_logged_user()). Also a default of the column.
     session_version = fields.IntField(default=0, db_default=0)
 
     def __str__(self):
         return self.display_name
-
-    @staticmethod
-    def hash_api_key(api_key: str) -> str:
-        """The stored form of an API key (see api_key_hash)."""
-        return f"{api_key[:8]}${hashlib.sha256(api_key.encode()).hexdigest()}"
-
-    @classmethod
-    async def get_by_api_key(cls, api_key: str):
-        return await cls.get_or_none(api_key_hash=cls.hash_api_key(api_key))
-
-    @property
-    def api_key_prefix(self) -> str | None:
-        """The start of the current API key, to tell which one it is."""
-        return self.api_key_hash[:8] if self.api_key_hash else None
 
     @classmethod
     async def change_credits(
@@ -103,7 +84,7 @@ class Account(Model):
     async def delete_with_tasks(cls, google_id: str) -> bool:
         """
         Delete an account and its tasks, keeping only the hash of its
-        Google ID (see DeletedAccount). Its sessions and its API key stop
+        Google ID (see DeletedAccount). Its sessions and its API keys stop
         working with it.
 
         The tasks go first and the account last, the order in which
@@ -121,6 +102,74 @@ class Account(Model):
             # The foreign key deletes, on cascade, the tasks created meanwhile.
             await cls.filter(id=account.id).delete()
         return True
+
+
+# How often the requests with an API key save when it was last used: the API key
+# page shows it within a minute, without a write to the database on each request.
+LAST_USE_PRECISION = datetime.timedelta(minutes=1)
+
+
+class ApiKey(Model):
+    """
+    A key of an account to the API.
+
+    An account can have several, each with a name: to change one without a
+    moment without a key, and to have one for each client, so a leaked one
+    can be revoked without stopping the others.
+
+    The key itself isn't stored: it's shown once, when created. This keeps
+    "first 8 characters$SHA-256" of it: the start tells keys apart, and the
+    unique index finds the key's account.
+    """
+    id = fields.IntField(primary_key=True)
+    account = fields.ForeignKeyField("models.Account", on_delete=fields.CASCADE, related_name="api_keys")
+    # What its user calls it, like the client that uses it.
+    name = fields.CharField(max_length=50)
+    key_hash = fields.CharField(max_length=255, unique=True)
+    created_at = fields.DatetimeField(auto_now_add=True)
+    # When a request last came with it, within LAST_USE_PRECISION. None if none did.
+    last_used_at = fields.DatetimeField(null=True)
+
+    @staticmethod
+    def hash_key(key: str) -> str:
+        """The stored form of a key (see key_hash)."""
+        return f"{key[:8]}${hashlib.sha256(key.encode()).hexdigest()}"
+
+    @property
+    def prefix(self) -> str:
+        """The start of the key, to tell which one it is."""
+        return self.key_hash[:8]
+
+    @classmethod
+    async def generate(cls, account_id: int, name: str, limit: int) -> str | None:
+        """
+        A new key of an account, with a name: the key itself, which only its
+        hash is kept of. None if the account has `limit` keys already: its row
+        stays locked meanwhile, so concurrent requests can't go over it.
+        """
+        key = secrets.token_hex(32)  # 64 characters
+        async with in_transaction():
+            # FOR NO KEY UPDATE, an UPDATE's lock: it doesn't hold up the rows that
+            # only reference the account, like a new task's.
+            await Account.select_for_update(no_key=True).get(id=account_id)
+            if await cls.filter(account_id=account_id).count() >= limit:
+                return None
+            await cls.create(account_id=account_id, name=name, key_hash=cls.hash_key(key))
+        return key
+
+    @classmethod
+    async def account_of(cls, key: str) -> Account | None:
+        """
+        The account of a key, or None if the key isn't one, or was revoked.
+        Saves when it was used, once every LAST_USE_PRECISION at most.
+        """
+        api_key = await cls.get_or_none(key_hash=cls.hash_key(key)).select_related("account")
+        if api_key is None:
+            return None
+        now = timezone.now()
+        if api_key.last_used_at is None or now - api_key.last_used_at >= LAST_USE_PRECISION:
+            await cls.filter(id=api_key.id).update(last_used_at=now)
+        return api_key.account
 
 
 class CreditMovement(Model):
@@ -372,7 +421,7 @@ class Webhook(Model):
     id = fields.IntField(primary_key=True)
     account = fields.OneToOneField("models.Account", on_delete=fields.CASCADE, related_name="webhook")
     url = fields.CharField(max_length=2000)
-    # "whsec_" and the base64 of random bytes. Readable, unlike the API key:
+    # "whsec_" and the base64 of random bytes. Readable, unlike the API keys:
     # the worker signs each event with it.
     secret = fields.CharField(max_length=100)
     created_at = fields.DatetimeField(auto_now_add=True)

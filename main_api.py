@@ -15,8 +15,6 @@ import json
 
 import logging
 
-import secrets
-
 import sys
 
 import tomllib
@@ -70,7 +68,9 @@ from taskiq_task import broker
 from taskiq_task import ATTEMPTS, LEASE, QUEUE_TIMEOUT, TIME_LIMIT
 from taskiq_task import LOG_FORMAT, TaskLost, ping_postgres, ping_redis, queue_task
 
-from web.db_models import Account, CreditMovement, DeletedAccount, TaskHistory, Webhook, WebhookDelivery, json_time
+from web.db_models import (
+    Account, ApiKey, CreditMovement, DeletedAccount, TaskHistory, Webhook, WebhookDelivery, json_time
+)
 
 from webhooks import KEEP as WEBHOOK_KEEP, Undeliverable, check_url, new_secret
 
@@ -360,10 +360,6 @@ class TaskHistoryOut(BaseModel):
 #      --- LOGIN ---      #
 #                         #
 ###########################
-def generate_api_key():
-    return secrets.token_hex(32)  # Generates a 64-character API key
-
-
 async def get_logged_user(
     cookie: str = Security(APIKeyCookie(name="token"))
         ) -> OpenID:
@@ -467,9 +463,9 @@ async def get_api_key_account(
     header_key: str | None = Security(api_key_header),
     query_key: str | None = Security(api_key_query)
         ) -> Account:
-    """Get the account of the API key, from the header or the query."""
+    """Get the account of the API key, from the header or the query (see ApiKey.account_of())."""
     api_key = header_key or query_key
-    account = await Account.get_by_api_key(api_key) if api_key else None
+    account = await ApiKey.account_of(api_key) if api_key else None
     if not account:
         raise HTTPException(status_code=401, detail="Invalid API key")
     return account
@@ -540,7 +536,7 @@ async def logout(
 async def delete_account(user: OpenID = Depends(get_logged_user)):
     """
     Delete the user's account, with its tasks, and forget the cookie. Its
-    sessions, on every device, and its API key stop working.
+    sessions, on every device, and its API keys stop working.
     """
     if await Account.delete_with_tasks(user.id):
         logger.info("Account of %s deleted by its user", user.id)
@@ -823,31 +819,69 @@ async def credit_history_with_api_key(
     return await credit_history_page(account, before, limit)
 
 
-@app.get("/user/api_key", response_model=dict)
-async def get_api_key(user: OpenID = Depends(get_logged_user)):
+# The most API keys an account can have: a key for each of its clients, and one
+# more while one of them changes, without an account piling them up.
+MAX_API_KEYS = 10
+# The longest name of an API key, as its column takes it.
+API_KEY_NAME_LENGTH = 50
+
+
+class ApiKeyIn(BaseModel):
+    # What the user calls it, like the client that uses it.
+    name: str
+
+
+def api_key_item(api_key: ApiKey) -> dict:
+    """An API key as the API key page shows it, and the account's export: its start, and not the key."""
+    return {
+        "id": api_key.id,
+        "name": api_key.name,
+        "prefix": api_key.prefix,
+        "created_at": json_time(api_key.created_at),
+        "last_used_at": json_time(api_key.last_used_at),
+    }
+
+
+async def api_keys_of(account: Account) -> list[dict]:
+    """The account's API keys, as the API key page shows them, the oldest first."""
+    return [api_key_item(api_key) for api_key in await ApiKey.filter(account_id=account.id).order_by("id")]
+
+
+# The API keys' routes take only the session, like the webhook's: a leaked key can't
+# make more keys, nor revoke the others. Out of /docs, like the webhook's.
+@app.get("/user/api_keys", include_in_schema=False)
+async def get_api_keys(user: OpenID = Depends(get_logged_user)):
+    return {"api_keys": await api_keys_of(await Account.get(google_id=user.id))}
+
+
+@app.post("/user/api_keys", include_in_schema=False)
+async def create_api_key(api_key_in: ApiKeyIn, user: OpenID = Depends(get_logged_user)):
     """
-    Fetch the start of the logged-in user's API key. Only its hash is
-    stored, so the whole key is shown just once, when it's generated.
+    Create an API key, with a name, besides the account's others. The answer
+    has the whole key: the only time it's shown, since only its hash is stored.
+    """
+    name = api_key_in.name.strip()
+    if not 1 <= len(name) <= API_KEY_NAME_LENGTH:
+        raise HTTPException(status_code=422, detail=f"Give the key a name, of up to {API_KEY_NAME_LENGTH} characters.")
+    account = await Account.get(google_id=user.id)
+    key = await ApiKey.generate(account.id, name, MAX_API_KEYS)
+    if key is None:
+        raise HTTPException(
+            status_code=409, detail=f"An account can have up to {MAX_API_KEYS} API keys: revoke one first."
+        )
+    return {"api_key": key, "api_keys": await api_keys_of(account)}
+
+
+@app.delete("/user/api_keys/{key_id}", include_in_schema=False)
+async def revoke_api_key(key_id: int, user: OpenID = Depends(get_logged_user)):
+    """
+    Revoke one of the account's API keys: the requests with it get a 401
+    error from then on, and the account's other keys keep working.
     """
     account = await Account.get(google_id=user.id)
-    return {"api_key_prefix": account.api_key_prefix}
-
-
-@app.post("/user/api_key", response_model=dict)
-async def create_or_regenerate_api_key(
-    user: OpenID = Depends(get_logged_user)
-        ):
-    account = await Account.get(google_id=user.id)
-
-    # Generate a new API key
-    new_api_key = generate_api_key()
-    account.api_key_hash = Account.hash_api_key(new_api_key)
-    # Save only this field: a full save would also write back the
-    # credits read above, undoing any credit reserved meanwhile.
-    await account.save(update_fields=["api_key_hash"])
-
-    # The only time the whole key is shown: it isn't stored.
-    return {"api_key": new_api_key}
+    if not await ApiKey.filter(id=key_id, account_id=account.id).delete():
+        raise HTTPException(status_code=404, detail="API key not found")
+    return {"api_keys": await api_keys_of(account)}
 
 
 # The latest deliveries of a webhook that the API key page shows, with these
@@ -899,7 +933,7 @@ def delivery_item(delivery: WebhookDelivery) -> dict:
     }
 
 
-# The webhook's routes take only the session, like the API key's: a leaked key
+# The webhook's routes take only the session, like the API keys': a leaked key
 # can't send the account's results somewhere else. Out of /docs, like the panel's.
 @app.get("/user/webhook", include_in_schema=False)
 async def get_webhook(user: OpenID = Depends(get_logged_user)):
@@ -1037,9 +1071,9 @@ async def json_array(pages: typing.AsyncIterator[list], encode: typing.Callable)
 
 async def account_export(account: Account) -> typing.AsyncIterator[str]:
     """
-    The account's data, as a JSON document, in pieces: its profile and its
-    webhook, and its tasks, credit history and webhook events, as the API
-    and the API key page give them, the oldest first.
+    The account's data, as a JSON document, in pieces: its profile, its API
+    keys and its webhook, and its tasks, credit history and webhook events,
+    as the API and the API key page give them, the oldest first.
     """
     webhook = await Webhook.get_or_none(account_id=account.id)
     head = {
@@ -1054,11 +1088,11 @@ async def account_export(account: Account) -> typing.AsyncIterator[str]:
             "provider": account.provider,
             "created_at": json_time(account.created_at),
             "credits": account.credits,
-            # Only the start of the API key, as the API key page shows it: the key isn't
-            # stored, and its hash is no use to anyone else.
-            "api_key_prefix": account.api_key_prefix,
         },
-        # Without its secret, which signs its events: a credential, like the API key.
+        # Only the start of each key, as the API key page shows them: the keys aren't
+        # stored, and their hashes are no use to anyone else.
+        "api_keys": await api_keys_of(account),
+        # Without its secret, which signs its events: a credential, like the API keys.
         "webhook": None if webhook is None else {
             "url": webhook.url,
             "created_at": json_time(webhook.created_at),
@@ -1122,7 +1156,7 @@ async def api_key_page(
     user: OpenID = Depends(get_page_user)
         ):
     """
-    Serve the API key management page.
+    Serve the page of the account's API keys and webhook.
     """
     return templates.TemplateResponse(
         request,

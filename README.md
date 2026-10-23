@@ -164,11 +164,11 @@ It replaces the whole database, in a single transaction: if anything fails, the 
 
    It shows the tasks 50 at a time (`TASK_HISTORY_LIMIT` in `main_api.py`), the latest first, with buttons to the older and the newer ones, and a *Cancel* button on the pending ones that no worker started yet. It checks the ones it shows every 5 seconds while one is pending, every 30 seconds otherwise, and not while its tab is hidden. Below them, the credit history shows each change of the account's credits, with the balance it left (see step 5).
 
-   At the bottom of the panel, users can download their data, as a JSON file: their account's profile, its tasks and its credit history, as the API gives them, and its webhook, with its recent events. It has neither the API key, only its first characters, nor the webhook's secret, and it takes the session, not the API key: a leaked key can't get the account's profile, nor its webhook's URL. It goes out as the database gives it, a hundred rows at a time, so a long history neither fills the server's memory nor holds up its other requests: an account with 100,000 tasks takes about half a minute.
+   At the bottom of the panel, users can download their data, as a JSON file: their account's profile, its tasks and its credit history, as the API gives them, its API keys, and its webhook, with its recent events. It has neither the API keys, only their first characters, nor the webhook's secret, and it takes the session, not an API key: a leaked key can't get the account's profile, nor its webhook's URL. It goes out as the database gives it, a hundred rows at a time, so a long history neither fills the server's memory nor holds up its other requests: an account with 100,000 tasks takes about half a minute.
 
-   They can also delete their account, with its tasks, its API key and its webhook: its sessions end on every device. All that's kept is a hash of its Google ID, so that logging in with it again starts an account without `INITIAL_CREDITS`: otherwise, deleting the account would be a way to get them again. The results of its tasks may stay in Redis for up to a day, until the result backend forgets them.
+   They can also delete their account, with its tasks, its API keys and its webhook: its sessions end on every device. All that's kept is a hash of its Google ID, so that logging in with it again starts an account without `INITIAL_CREDITS`: otherwise, deleting the account would be a way to get them again. The results of its tasks may stay in Redis for up to a day, until the result backend forgets them.
 
-4. Use the API with the key from the *API Key & Webhook* page, sent in the `X-API-Key` header. A task starts with a POST to `/api/task/<name>`, with its parameters in a JSON object:
+4. Use the API with a key from the *API Keys & Webhook* page, sent in the `X-API-Key` header. A task starts with a POST to `/api/task/<name>`, with its parameters in a JSON object:
     ```bash
     curl -H "X-API-Key: your_api_key" http://127.0.0.1:8000/api/user_credits
     curl -H "X-API-Key: your_api_key" -H "Content-Type: application/json" -d '{"x": 10, "y": 4}' http://127.0.0.1:8000/api/task/divide
@@ -181,7 +181,7 @@ It replaces the whole database, in a single transaction: if anything fails, the 
 
    To retry a request safely, for example after a timeout, send it with an `Idempotency-Key` header, with a value you pick for each request, like a UUID. Sent again with the same key, the request gets the task it started, without paying for another one, and if it didn't start one, it starts it then. Reusing a key for another task or other parameters gets a 422 error. The panel does the same, so a double click starts one task.
 
-   The page shows the whole key only when you generate it: the database keeps just its first characters and a hash of it.
+   An account can have up to 10 keys (`MAX_API_KEYS` in `main_api.py`), each with a name, like the client that uses it. Each one works until you revoke it, on the same page, and revoking one doesn't stop the others: to change a key, create another one, use it in your client, and then revoke the old one, without a moment without a key, and if one leaks, revoke just that one. The page shows the whole key only when you create it: the database keeps just its first characters and a hash of it. It also shows when each key was last used, within a minute, so you can tell when nothing uses one anymore.
 
    Instead of asking for a task's details until it ends, set a webhook on the same page: a URL that gets a POST when each task of the account ends, started from the panel or the API, canceled ones too. Its body is the task, as `/api/task_details` gives it:
     ```json
@@ -278,18 +278,12 @@ It replaces the whole database, in a single transaction: if anything fails, the 
     ```
     Then restart the backend to apply it (with Docker, `docker compose up --build`). The tests fail if the models have changes without a migration.
 - Each release is a tag, like `v1.0.0`, with its notes in the repository's Releases. The `version` in `pyproject.toml` has its number, and `/docs` shows it. To update an installation, read the notes of the releases since yours, then bring in the code and start the app as after changing it: the backend applies the new migrations when it starts. The next notes are for installations from before the first release.
-- A database created before the migrations already has the tables of the first one: the first time this version starts, that migration is only recorded as applied, and the later ones are applied as usual. If it's from before API keys became unique, add their index by hand:
-    ```sql
-    ALTER TABLE account ADD CONSTRAINT account_api_key_key UNIQUE (api_key);
-    ```
+- A database created before the migrations already has the tables of the first one: the first time this version starts, that migration is only recorded as applied, and the later ones are applied as usual.
 - A Redis started with an older `compose.yaml` only saved snapshots, and this one starts it empty: the tasks waiting in its queue would be lost, and fail as `TaskLost`. To keep them, turn on its append-only file while it runs, before you update the app:
     ```bash
     docker compose exec redis redis-cli config set appendonly yes
     ```
-- A database created before API keys were hashed has them in plain text. Run `scripts/hash_api_keys.sql` once, with the app stopped, before starting this version; the keys keep working:
-    ```bash
-    psql -h your_db_host -p 5432 -U your_db_username -d your_database_name -f scripts/hash_api_keys.sql
-    ```
+- A database created before API keys were hashed has them in plain text: the migration that moves them to their own table hashes them, and they keep working.
 
 ---
 

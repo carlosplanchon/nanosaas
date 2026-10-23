@@ -1,12 +1,8 @@
-// The API key page: the start of the current key, a new one, and the webhook
+// The API key page: the account's keys, a new one, and the webhook
 // (web/templates/api_key_page.html).
 
 // The ROOT_PATH of the app's URLs, like "/nanosaas", from the page's <html>.
 const ROOT_PREFIX = document.documentElement.dataset.rootPrefix;
-
-const apiKeyInput = document.getElementById('api_key');
-const successMessage = document.getElementById('success-message');
-const errorMessage = document.getElementById('error-message');
 
 // When the session expires, go back to the login page.
 function sessionExpired(response) {
@@ -17,58 +13,114 @@ function sessionExpired(response) {
     return true;
 }
 
-// Fetch the start of the current API key on page load (only its
-// hash is stored, so the whole key can't be shown again)
-async function fetchApiKey() {
+// The API keys: their names, the start of each one, and when it was created and last used.
+const apiKeysBody = document.getElementById('api-keys');
+const noApiKeys = document.getElementById('no-api-keys');
+const apiKeyNameInput = document.getElementById('api_key_name');
+const newApiKey = document.getElementById('new-api-key');
+const newApiKeyName = document.getElementById('new-api-key-name');
+const newApiKeyInput = document.getElementById('new_api_key');
+const apiKeyMessage = document.getElementById('api-key-message');
+const apiKeyError = document.getElementById('api-key-error');
+
+// A row of the keys. As text: their names are the user's.
+function apiKeyRow(apiKey) {
+    const row = document.createElement('tr');
+    const texts = [
+        apiKey.name, `${apiKey.prefix}…`, new Date(apiKey.created_at).toLocaleString(),
+        apiKey.last_used_at ? new Date(apiKey.last_used_at).toLocaleString() : 'Never',
+    ];
+    for (const text of texts) {
+        const cell = document.createElement('td');
+        cell.className = 'px-2 py-1 border-t border-gray-200';
+        cell.textContent = text;
+        row.append(cell);
+    }
+    row.children[1].classList.add('font-mono');
+    const revoke = document.createElement('button');
+    revoke.type = 'button';
+    revoke.className = 'text-red-600 hover:underline';
+    revoke.textContent = 'Revoke';
+    revoke.addEventListener('click', () => revokeApiKey(apiKey));
+    const cell = document.createElement('td');
+    cell.className = 'px-2 py-1 border-t border-gray-200 text-right';
+    cell.append(revoke);
+    row.append(cell);
+    return row;
+}
+
+function showApiKeys(apiKeys) {
+    apiKeysBody.replaceChildren(...apiKeys.map(apiKeyRow));
+    noApiKeys.classList.toggle('hidden', apiKeys.length > 0);
+}
+
+async function loadApiKeys() {
     try {
-        const response = await fetch(`${ROOT_PREFIX}/user/api_key`, {
-            method: 'GET',
-            credentials: 'include'
-        });
+        const response = await fetch(`${ROOT_PREFIX}/user/api_keys`);
         if (sessionExpired(response)) return;
-
         if (!response.ok) {
-            throw new Error('Failed to fetch API key.');
+            throw new Error('Failed to fetch the API keys.');
         }
-
-        const data = await response.json();
-        apiKeyInput.value = data.api_key_prefix
-            ? `${data.api_key_prefix}…`
-            : 'No API key generated yet';
+        showApiKeys((await response.json()).api_keys);
     } catch (error) {
-        apiKeyInput.value = 'Error fetching API key.';
         console.error(error);
     }
 }
 
-// Generate a new API key
-document.getElementById('generate-key-button').addEventListener('click', async () => {
-    successMessage.classList.add('hidden');
-    errorMessage.classList.add('hidden');
-
+// A change to the keys: shows the keys it answers, and the message, or what went wrong.
+// Returns its answer, or null.
+async function changeApiKeys(method, path, body, message) {
+    apiKeyMessage.classList.add('hidden');
+    apiKeyError.classList.add('hidden');
     try {
-        const response = await fetch(`${ROOT_PREFIX}/user/api_key`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            credentials: 'include'
+        const response = await fetch(`${ROOT_PREFIX}/user/api_keys${path}`, {
+            method,
+            headers: body ? { 'Content-Type': 'application/json' } : {},
+            body: body ? JSON.stringify(body) : undefined
         });
-        if (sessionExpired(response)) return;
-
-        if (!response.ok) {
-            throw new Error(`Error: ${response.statusText}`);
-        }
+        if (sessionExpired(response)) return null;
 
         const data = await response.json();
-        apiKeyInput.value = data.api_key;
-        successMessage.textContent = "API Key generated. Copy it now: it won't be shown again.";
-        successMessage.classList.remove('hidden');
+        if (!response.ok) {
+            // The server says what's wrong, like a missing name.
+            throw new Error(typeof data.detail === 'string' ? data.detail : 'Check the name.');
+        }
+        showApiKeys(data.api_keys);
+        apiKeyMessage.textContent = message;
+        apiKeyMessage.classList.toggle('hidden', !message);
+        return data;
     } catch (error) {
-        errorMessage.textContent = error.message;
-        errorMessage.classList.remove('hidden');
+        apiKeyError.textContent = error.message;
+        apiKeyError.classList.remove('hidden');
+        return null;
+    }
+}
+
+document.getElementById('api-key-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const name = apiKeyNameInput.value.trim();
+    const data = await changeApiKeys('POST', '', { name }, '');
+    if (data) {
+        // The only time it's shown: only its hash is stored.
+        newApiKeyName.textContent = name;
+        newApiKeyInput.value = data.api_key;
+        newApiKey.classList.remove('hidden');
+        apiKeyNameInput.value = '';
+        newApiKeyInput.select();
     }
 });
+
+async function revokeApiKey(apiKey) {
+    if (!confirm(`Revoke the key "${apiKey.name}"? The requests with it will get a 401 error from now on.`)) {
+        return;
+    }
+    if (await changeApiKeys('DELETE', `/${apiKey.id}`, null, `Revoked "${apiKey.name}".`)
+            && newApiKeyInput.value.startsWith(apiKey.prefix)) {
+        // The new key that the page shows: it doesn't work anymore.
+        newApiKey.classList.add('hidden');
+        newApiKeyInput.value = '';
+    }
+}
 
 // The webhook: where the account gets an event when each of its tasks ends.
 const webhookUrlInput = document.getElementById('webhook_url');
@@ -219,5 +271,5 @@ webhookResendButton.addEventListener('click', () => changeWebhook(
 ));
 
 // Initialize page
-fetchApiKey();
+loadApiKeys();
 loadWebhook();

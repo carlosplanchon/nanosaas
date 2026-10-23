@@ -355,7 +355,7 @@ document.addEventListener('alpine:init', () => {
 
 // Deleting the account asks first.
 document.getElementById('delete-account').addEventListener('submit', event => {
-    if (!confirm('Delete your account, with its tasks, its credits, its API key and its webhook? This cannot be undone.')) {
+    if (!confirm('Delete your account, with its tasks, its credits, its API keys and its webhook? This cannot be undone.')) {
         event.preventDefault();
     }
 });

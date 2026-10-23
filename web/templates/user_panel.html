@@ -25,7 +25,7 @@
                 {% endif %}
                 <a href="{{ root_prefix }}/user/api_key_page">
                     <button class="bg-green-500 hover:bg-green-600 text-white font-semibold py-2 px-4 rounded-md">
-                        API Key &amp; Webhook
+                        API Keys &amp; Webhook
                     </button>
                 </a>
                 <form method="post" action="{{ root_prefix }}/auth/logout">
@@ -39,7 +39,7 @@
         {% if webhook_disabled %}
         <div class="bg-red-100 border border-red-300 text-red-700 p-4 rounded-md mb-6">
             Your webhook is disabled, so its events aren't sent: the
-            <a href="{{ root_prefix }}/user/api_key_page" class="font-semibold underline">API Key &amp; Webhook</a>
+            <a href="{{ root_prefix }}/user/api_key_page" class="font-semibold underline">API Keys &amp; Webhook</a>
             page says why, and enables it again.
         </div>
         {% endif %}

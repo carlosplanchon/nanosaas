@@ -1,4 +1,5 @@
 """Migrations: the API applies them when it starts, also on databases from before them."""
+import secrets
 import uuid
 from pathlib import Path
 
@@ -9,12 +10,33 @@ from tortoise.context import TortoiseContext
 from tortoise.migrations.api import migrate
 from tortoise.migrations.autodetector import MigrationAutodetector
 
-from tests.helpers import client_for, create_account
+from tests.helpers import Account, client_for, session_cookie, stored_api_key
 
 pytestmark = pytest.mark.anyio
 
 REPO = Path(__file__).resolve().parent.parent
 MIGRATIONS = [("models", path.stem) for path in sorted((REPO / "web" / "migrations").glob("0*.py"))]
+
+
+async def legacy_account(db, stored):
+    """
+    An account as older versions created it, with 5 credits and its API key in
+    its own row, as stored() keeps it: hashed, or as it was, from before NanoSaaS
+    hashed them, or None, without one.
+    """
+    google_id = f"test-{uuid.uuid4()}"
+    api_key = secrets.token_hex(32)
+    account_id = await db.fetchval(
+        """
+        INSERT INTO account (google_id, email, first_name, last_name, display_name,
+                             picture, provider, created_at, credits, api_key)
+        VALUES ($1, $2, 'Test', 'User', 'Test User', 'https://example.com/picture.png',
+                'google', now(), 5, $3)
+        RETURNING id
+        """,
+        google_id, f"{google_id}@example.com", stored(api_key),
+    )
+    return Account(account_id, google_id, api_key, session_cookie(google_id), db)
 
 
 async def test_a_new_database_gets_every_migration(db):
@@ -69,7 +91,9 @@ async def test_a_database_from_before_the_migrations_keeps_its_data(services, st
     db = await asyncpg.connect(f"postgresql://{host}/{name}")
     try:
         await db.execute("DROP TABLE tortoise_migrations")
-        account = await create_account(db)
+        account = await legacy_account(db, stored_api_key)
+        plain = await legacy_account(db, lambda api_key: api_key)
+        keyless = await legacy_account(db, lambda api_key: None)
         # With the columns of the first migration's table.
         task_id = str(uuid.uuid4())
         await db.execute(
@@ -94,6 +118,18 @@ async def test_a_database_from_before_the_migrations_keeps_its_data(services, st
                 r = await anon.get("/api/credit_history", headers=headers)
                 history = [(m["reason"], m["amount"], m["balance"]) for m in r.json()["movements"]]
                 assert history == [("opening", 5, 5)]
+                # A key from before the hashing works too: it's hashed on its way to its table.
+                r = await anon.get("/api/user_credits", headers={"X-API-Key": plain.api_key})
+                assert r.json() == {"credits": 5}
+            # Each account's key is its first one, once.
+            for owner, keys in [(account, [account.api_key]), (plain, [plain.api_key]), (keyless, [])]:
+                async with client_for(server, owner.cookie) as user:
+                    r = await user.get("/user/api_keys")
+                assert [(key["name"], key["prefix"]) for key in r.json()["api_keys"]] == [
+                    ("Default", api_key[:8]) for api_key in keys
+                ]
+            stored = await db.fetchval("SELECT key_hash FROM apikey WHERE account_id = $1", plain.id)
+            assert stored == stored_api_key(plain.api_key)
             rows = await db.fetch("SELECT app, name FROM tortoise_migrations ORDER BY name")
             assert [tuple(row) for row in rows] == MIGRATIONS
     finally:

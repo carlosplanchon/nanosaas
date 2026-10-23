@@ -90,8 +90,11 @@ jobs:
           key=$(openssl rand -hex 32)
           stored="${key:0:8}\$$(printf %s "$key" | sha256sum | cut -d ' ' -f 1)"
           docker compose exec -T postgres psql -U nanosaas -v ON_ERROR_STOP=1 -c "
-            INSERT INTO account (google_id, email, picture, provider, created_at, credits, api_key)
-            VALUES ('ci', 'ci@example.com', '', 'google', now(), 25, '$stored')"
+            WITH new_account AS (
+              INSERT INTO account (google_id, email, picture, provider, created_at, credits)
+              VALUES ('ci', 'ci@example.com', '', 'google', now(), 25) RETURNING id)
+            INSERT INTO apikey (account_id, name, key_hash, created_at)
+            SELECT id, 'CI', '$stored', now() FROM new_account"
 
           request() { curl --silent --fail --header "X-API-Key: $key" "$api$1" "${@:2}"; }
           divide() {
@@ -130,8 +133,11 @@ jobs:
           query() { docker compose exec -T postgres psql -U nanosaas -tAc "$1"; }
           key=$(openssl rand -hex 32)
           stored="${key:0:8}\$$(printf %s "$key" | sha256sum | cut -d ' ' -f 1)"
-          query "INSERT INTO account (google_id, email, picture, provider, created_at, credits, api_key)
-                 VALUES ('hook', 'hook@example.com', '', 'google', now(), 5, '$stored')" > /dev/null
+          query "WITH new_account AS (
+                   INSERT INTO account (google_id, email, picture, provider, created_at, credits)
+                   VALUES ('hook', 'hook@example.com', '', 'google', now(), 5) RETURNING id)
+                 INSERT INTO apikey (account_id, name, key_hash, created_at)
+                 SELECT id, 'CI', '$stored', now() FROM new_account" > /dev/null
           # Straight in the database: the API checks the URL too, and wouldn't take it.
           query "INSERT INTO webhook (account_id, url, secret, created_at)
                  SELECT id, 'https://api:8000/hook', 'whsec_$(openssl rand -base64 32)', now()

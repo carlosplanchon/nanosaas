@@ -71,6 +71,9 @@ async def test_the_export_has_the_account_s_data_as_the_api_and_the_pages_give_i
     others = await insert_task(db, await create_account(db), status="SUCCESS", result=1.0)
 
     r, data = await export(server, account)
+    # Before the requests below use the key.
+    async with client_for(server, account.cookie) as user:
+        api_keys = (await user.get("/user/api_keys")).json()["api_keys"]
 
     headers = {"X-API-Key": account.api_key}
     history = (await anon.get("/api/task_history", headers=headers)).json()["tasks"]
@@ -83,6 +86,9 @@ async def test_the_export_has_the_account_s_data_as_the_api_and_the_pages_give_i
         deliveries = (await user.get("/user/webhook")).json()["deliveries"]
     assert data["webhook_events"] == deliveries[::-1]
     assert others not in r.text
+    # As the API key page shows them: the start of each one, and not the key.
+    assert data["api_keys"] == api_keys
+    assert [(key["name"], key["prefix"]) for key in data["api_keys"]] == [("Test key", account.api_key[:8])]
 
     # Without the webhook's secret, nor the API key: credentials, which the export doesn't need.
     created_at = await db.fetchval("SELECT created_at FROM webhook WHERE id = $1", webhook_id)
@@ -96,7 +102,7 @@ async def test_the_export_has_the_account_s_data_as_the_api_and_the_pages_give_i
         "google_id": account.google_id, "email": f"{account.google_id}@example.com",
         "first_name": "Test", "last_name": "User", "display_name": "José Ñandú",
         "picture": "https://example.com/picture.png", "provider": "google",
-        "created_at": utc(created_at), "credits": 5, "api_key_prefix": account.api_key[:8],
+        "created_at": utc(created_at), "credits": 5,
     }
     # As it is, in UTF-8.
     assert "José Ñandú".encode() in r.content and "División por cero.".encode() in r.content

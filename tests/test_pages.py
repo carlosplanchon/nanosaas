@@ -29,7 +29,7 @@ async def test_public_pages_and_static_files(anon):
 
 @pytest.mark.parametrize(
     "path",
-    ["/userpanel", "/user/api_key_page", "/user/credits", "/user/task_history", "/user/api_key"],
+    ["/userpanel", "/user/api_key_page", "/user/credits", "/user/task_history", "/user/api_keys"],
 )
 async def test_user_pages_with_a_session(user, path):
     assert (await user.get(path)).status_code == 200

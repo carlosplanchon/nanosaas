@@ -38,6 +38,7 @@ async def test_deleting_the_account_deletes_its_tasks_and_ends_its_sessions_and_
 
     assert await db.fetchval("SELECT count(*) FROM account WHERE id = $1", account.id) == 0
     assert await db.fetchval("SELECT count(*) FROM taskhistory WHERE task_id = ANY($1)", task_ids) == 0
+    assert await db.fetchval("SELECT count(*) FROM apikey WHERE account_id = $1", account.id) == 0
     for cookie in (account.cookie, other_device):
         async with client_for(server, cookie) as client:
             assert (await client.get("/user/credits")).status_code == 401

@@ -57,6 +57,8 @@ async def test_every_time_is_in_utc_ending_in_z(app_module, server, db, account,
     async with client_for(server, account.cookie) as user:
         documents["the task's details, for the panel"] = (await user.get(f"/api/task_details_from_user/{task_id}")).json()
         documents["the webhook"] = (await user.get("/user/webhook")).json()
+        # When each key was created, and used, as the requests above did.
+        documents["the API keys"] = (await user.get("/user/api_keys")).json()
         documents["the export"] = json.loads((await user.get("/user/export")).content)
     await db.execute(
         "INSERT INTO account (google_id, email, picture, provider, created_at, credits) "
