@@ -70,7 +70,7 @@ from taskiq_task import broker
 from taskiq_task import ATTEMPTS, LEASE, QUEUE_TIMEOUT, TIME_LIMIT
 from taskiq_task import LOG_FORMAT, TaskLost, ping_postgres, ping_redis, queue_task
 
-from web.db_models import Account, CreditMovement, DeletedAccount, TaskHistory, Webhook, WebhookDelivery
+from web.db_models import Account, CreditMovement, DeletedAccount, TaskHistory, Webhook, WebhookDelivery, json_time
 
 from webhooks import KEEP as WEBHOOK_KEEP, Undeliverable, check_url, new_secret
 
@@ -876,7 +876,7 @@ async def webhook_of(account: Account) -> dict:
         "url": webhook.url,
         "secret": webhook.secret,
         # When the worker disabled it, and why: meanwhile, its events wait.
-        "disabled_at": webhook.disabled_at and webhook.disabled_at.isoformat(),
+        "disabled_at": json_time(webhook.disabled_at),
         "disabled_reason": webhook.disabled_reason,
         # The events that failed, which the page can send again.
         "failed": await WebhookDelivery.filter(webhook_id=webhook.id, status="FAILED").count(),
@@ -892,7 +892,7 @@ def delivery_item(delivery: WebhookDelivery) -> dict:
         "task_id": delivery.task_id,
         "status": delivery.status,
         "attempts": delivery.attempts,
-        "created_at": delivery.created_at.isoformat(),
+        "created_at": json_time(delivery.created_at),
         # The receiver's answer, from another server: the page shows it as text.
         "last_response": delivery.last_response,
     }
@@ -1042,7 +1042,7 @@ async def account_export(account: Account) -> typing.AsyncIterator[str]:
     """
     webhook = await Webhook.get_or_none(account_id=account.id)
     head = {
-        "exported_at": datetime.datetime.now(tz=datetime.timezone.utc).isoformat(),
+        "exported_at": json_time(datetime.datetime.now(tz=datetime.timezone.utc)),
         "account": {
             "google_id": account.google_id,
             "email": account.email,
@@ -1051,7 +1051,7 @@ async def account_export(account: Account) -> typing.AsyncIterator[str]:
             "display_name": account.display_name,
             "picture": account.picture,
             "provider": account.provider,
-            "created_at": account.created_at.isoformat(),
+            "created_at": json_time(account.created_at),
             "credits": account.credits,
             # Only the start of the API key, as the API key page shows it: the key isn't
             # stored, and its hash is no use to anyone else.
@@ -1060,8 +1060,8 @@ async def account_export(account: Account) -> typing.AsyncIterator[str]:
         # Without its secret, which signs its events: a credential, like the API key.
         "webhook": None if webhook is None else {
             "url": webhook.url,
-            "created_at": webhook.created_at.isoformat(),
-            "disabled_at": webhook.disabled_at and webhook.disabled_at.isoformat(),
+            "created_at": json_time(webhook.created_at),
+            "disabled_at": json_time(webhook.disabled_at),
             "disabled_reason": webhook.disabled_reason,
         },
     }
@@ -1707,7 +1707,7 @@ async def admin_accounts(search: str = "", admin: OpenID = Depends(get_admin)):
             "display_name": account.display_name,
             "credits": account.credits,
             "pending_tasks": pending.get(account.id, 0),
-            "created_at": account.created_at,
+            "created_at": json_time(account.created_at),
         }
         for account in accounts
     ]

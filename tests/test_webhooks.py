@@ -791,7 +791,7 @@ def test_the_signature_is_standard_webhooks(app_module):
     from webhooks import new_secret, sign
 
     secret = new_secret()
-    body = json.dumps({"type": "webhook.test", "timestamp": "2026-10-21T12:00:00+00:00", "data": {}}).encode()
+    body = json.dumps({"type": "webhook.test", "timestamp": "2026-10-21T12:00:00Z", "data": {}}).encode()
     timestamp = int(datetime.datetime.now().timestamp())
     signature = sign(secret, "msg_test", timestamp, body)
     headers = {"webhook-id": "msg_test", "webhook-timestamp": str(timestamp), "webhook-signature": signature}

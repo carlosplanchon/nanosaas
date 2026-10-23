@@ -112,9 +112,13 @@ def free_port():
 
 
 class Process:
-    """A process started from the repository root, reading the given config."""
+    """
+    A process started from the repository root, reading the given config. It
+    has timeout seconds to get ready: on a busy machine, a worker has taken
+    more than a minute.
+    """
 
-    def __init__(self, args, config, log, is_ready, timeout=60, env=None):
+    def __init__(self, args, config, log, is_ready, timeout=180, env=None):
         self.log = log
         # Unbuffered, so the logs are complete when a test reads them.
         env = {**os.environ, "NANOSAAS_CONFIG": str(config), "PYTHONUNBUFFERED": "1", **(env or {})}

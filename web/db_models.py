@@ -17,6 +17,15 @@ from tortoise.transactions import in_transaction
 logger = logging.getLogger(__name__)
 
 
+def json_time(moment: datetime.datetime | None) -> str | None:
+    """
+    A time as NanoSaaS writes them all in JSON: ISO 8601, in UTC, ending in
+    Z, as Pydantic writes the API's models, and as Standard Webhooks' examples.
+    None stays None.
+    """
+    return None if moment is None else to_jsonable_python(moment.astimezone(datetime.timezone.utc))
+
+
 # Define Account Model using TortoiseORM
 class Account(Model):
     id = fields.IntField(primary_key=True)
@@ -218,7 +227,7 @@ class TaskHistory(Model):
             "parameters": self.parameters,
             "status": self.status,
             "result": self.result,
-            "created_at": self.created_at.isoformat(),
+            "created_at": json_time(self.created_at),
             "cost": self.cost,
         }
 
@@ -412,7 +421,7 @@ class WebhookDelivery(Model):
     async def queue(cls, webhook: Webhook, type: str, data: dict, task_id: str | None = None) -> None:
         """Record an event for a webhook, to be sent right away."""
         now = timezone.now()
-        payload = {"type": type, "timestamp": now.isoformat(), "data": data}
+        payload = {"type": type, "timestamp": json_time(now), "data": data}
         await cls.create(
             webhook=webhook, message_id=f"msg_{uuid.uuid4().hex}", type=type, task_id=task_id,
             payload=json.dumps(payload, separators=(",", ":")), next_attempt_at=now,
