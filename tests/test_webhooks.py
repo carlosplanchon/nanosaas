@@ -7,6 +7,7 @@ import asyncio
 import base64
 import copy
 import datetime
+import email.utils
 import json
 import uuid
 
@@ -292,6 +293,72 @@ async def test_a_failed_attempt_is_tried_again_with_the_same_id(
     assert verified(first, secret) == verified(second, secret)
     row = await wait_for_delivery(webhook_db, first.headers["webhook-id"], status_is("DELIVERED"))
     assert (row["attempts"], row["last_response"]) == (2, "200 OK")
+    # A 500 doesn't make the webhook's other events wait.
+    assert (await webhook_row(webhook_db, webhook_account))["throttled_until"] is None
+
+
+def http_date(moment):
+    """A time as an HTTP header writes it, like Retry-After: Fri, 23 Oct 2026 12:00:00 GMT."""
+    return email.utils.format_datetime(moment, usegmt=True)
+
+
+@pytest.mark.parametrize("status, retry_after, wait", [
+    # Seconds, more than the 5 of the schedule.
+    (429, "30", 30),
+    # A date, 40 seconds from now, in whole seconds, as a 503 may give it.
+    (503, lambda now: http_date(now + datetime.timedelta(seconds=40)), 40),
+    # More than a day: a day.
+    (429, "999999", 24 * 3600),
+])
+async def test_a_retry_after_delays_the_event_and_the_webhook_s_others(
+    webhook_server, webhook_worker, webhook_account, webhook_db, receiver, status, retry_after, wait
+):
+    await set_webhook(webhook_server, webhook_account, receiver.url)
+    if callable(retry_after):
+        retry_after = retry_after(datetime.datetime.now(tz=datetime.timezone.utc))
+    receiver.statuses = [(status, {"Retry-After": retry_after})]
+    queued = await send_test_event(webhook_server, webhook_account)
+    row = await wait_for_delivery(webhook_db, queued["id"], attempted)
+    webhook = await wait_for_webhook(webhook_db, webhook_account, lambda row: row["throttled_until"] is not None)
+    # As Standard Webhooks says: its next attempt, and the webhook's other events, wait that long.
+    for until in (row["next_attempt_at"], webhook["throttled_until"]):
+        assert wait - 2 <= (until - row["last_attempt_at"]).total_seconds() <= wait + 1
+    other = await insert_delivery(webhook_db, webhook_account)
+    await asyncio.sleep(3)
+    assert len(receiver.received) == 1
+    assert (await delivery(webhook_db, other))["attempts"] == 0
+    # Once the wait ends, both go.
+    await webhook_db.execute("UPDATE webhook SET throttled_until = now() WHERE account_id = $1", webhook_account.id)
+    await webhook_db.execute("UPDATE webhookdelivery SET next_attempt_at = now() WHERE message_id = $1", queued["id"])
+    for message_id in (queued["id"], other):
+        await wait_for_delivery(webhook_db, message_id, status_is("DELIVERED"))
+
+
+async def test_a_retry_after_shorter_than_the_schedule_keeps_it(
+    webhook_server, webhook_worker, webhook_account, webhook_db, receiver
+):
+    await set_webhook(webhook_server, webhook_account, receiver.url)
+    receiver.statuses = [(429, {"Retry-After": "1"})]
+    queued = await send_test_event(webhook_server, webhook_account)
+    row = await wait_for_delivery(webhook_db, queued["id"], attempted)
+    # 5 seconds, plus up to a tenth.
+    assert 5 <= (row["next_attempt_at"] - row["last_attempt_at"]).total_seconds() <= 5.5
+
+
+@pytest.mark.parametrize("status", [429, 502, 504])
+async def test_a_receiver_under_load_gets_the_webhook_s_events_a_minute_later(
+    webhook_server, webhook_worker, webhook_account, webhook_db, receiver, status
+):
+    await set_webhook(webhook_server, webhook_account, receiver.url)
+    # Without Retry-After: as Standard Webhooks recommends, its events slow down.
+    receiver.statuses = [status]
+    queued = await send_test_event(webhook_server, webhook_account)
+    row = await wait_for_delivery(webhook_db, queued["id"], attempted)
+    webhook = await wait_for_webhook(webhook_db, webhook_account, lambda row: row["throttled_until"] is not None)
+    assert 59 <= (webhook["throttled_until"] - row["last_attempt_at"]).total_seconds() <= 61
+    # Its next attempt, which the schedule puts 5 seconds later, waits the minute too.
+    await asyncio.sleep(7)
+    assert len(receiver.received) == 1
 
 
 async def test_a_pending_delivery_goes_to_the_new_url_with_the_new_secret(
@@ -390,8 +457,9 @@ async def test_a_disabled_webhook_s_events_wait_until_it_s_enabled(
 ):
     await set_webhook(webhook_server, webhook_account, receiver.url)
     await webhook_db.execute(
-        "UPDATE webhook SET failing_since = now() - interval '3 days', disabled_at = now(), disabled_reason = $2 "
-        "WHERE account_id = $1",
+        # And its events wait a day, as a Retry-After asked: enabling it ends that too.
+        "UPDATE webhook SET failing_since = now() - interval '3 days', disabled_at = now(), disabled_reason = $2, "
+        "throttled_until = now() + interval '1 day' WHERE account_id = $1",
         webhook_account.id, GONE,
     )
     async with client_for(webhook_server, webhook_account.cookie) as user:
@@ -422,13 +490,15 @@ async def test_a_disabled_webhook_s_events_wait_until_it_s_enabled(
 async def test_saving_the_url_enables_the_webhook_again(webhook_server, webhook_account, webhook_db, receiver):
     await set_webhook(webhook_server, webhook_account, receiver.url)
     await webhook_db.execute(
-        "UPDATE webhook SET failing_since = now(), disabled_at = now(), disabled_reason = $2 WHERE account_id = $1",
+        "UPDATE webhook SET failing_since = now(), disabled_at = now(), disabled_reason = $2, "
+        "throttled_until = now() + interval '1 day' WHERE account_id = $1",
         webhook_account.id, GONE,
     )
-    # The same URL, or another one: its failures are forgotten too.
+    # The same URL, or another one: its failures, and any wait, are forgotten too.
     webhook = await set_webhook(webhook_server, webhook_account, receiver.url)
     assert (webhook["disabled_at"], webhook["disabled_reason"]) == (None, None)
-    assert (await webhook_row(webhook_db, webhook_account))["failing_since"] is None
+    row = await webhook_row(webhook_db, webhook_account)
+    assert (row["failing_since"], row["throttled_until"]) == (None, None)
 
 
 async def test_the_failed_events_are_sent_again_with_their_ids(
@@ -747,6 +817,53 @@ async def test_an_attempt_to_the_url_before_doesn_t_change_the_webhook(own_datab
     assert row.failing_since is not None
 
 
+async def test_the_workers_skip_the_webhooks_whose_events_wait(own_database):
+    from webhooks import claim_due
+
+    app = own_database
+    now = datetime.datetime.now(tz=datetime.timezone.utc)
+    webhooks = []
+    for until in (None, now - datetime.timedelta(seconds=1), now + datetime.timedelta(minutes=1)):
+        _, webhook = await own_webhook(app)
+        await app.Webhook.filter(id=webhook.id).update(throttled_until=until)
+        await app.WebhookDelivery.queue(webhook, "webhook.test", {})
+        webhooks.append(webhook)
+    # Not the one that waits a minute more.
+    assert sorted(delivery.webhook_id for delivery in await claim_due()) == [webhooks[0].id, webhooks[1].id]
+
+
+async def test_a_webhook_waits_until_the_latest_time_asked(own_database):
+    from webhooks import throttle
+
+    app = own_database
+    _, webhook = await own_webhook(app)
+    now = datetime.datetime.now(tz=datetime.timezone.utc)
+    later, sooner = now + datetime.timedelta(minutes=10), now + datetime.timedelta(minutes=1)
+    # Like two attempts that end at once, the second one with a shorter wait.
+    for until in (later, sooner):
+        await throttle(webhook, until)
+    assert (await app.Webhook.get(id=webhook.id)).throttled_until == later
+    # Not if its URL changed meanwhile: the new one starts afresh.
+    await app.Webhook.filter(id=webhook.id).update(url="https://example.org/", throttled_until=None)
+    await throttle(webhook, later)
+    assert (await app.Webhook.get(id=webhook.id)).throttled_until is None
+
+
+@pytest.mark.parametrize("header, seconds", [
+    ("120", 120), (" 7 ", 7), ("0", 0),
+    # A date: how long until then, or none if it passed.
+    ("Fri, 23 Oct 2026 12:02:00 GMT", 120), ("Fri, 23 Oct 2026 11:59:00 GMT", 0),
+    # Not a whole number of seconds, nor a date: like a year that Python 3.11 can't hold.
+    ("-5", None), ("1.5", None), ("soon", None), ("", None), (None, None),
+    ("Mon, 01 Jan 99999999999999999999 00:00:00 GMT", None), ("Mon, 32 Jan 2026 00:00:00 GMT", None),
+])
+def test_a_retry_after_is_seconds_or_a_date(app_module, header, seconds):
+    from webhooks import retry_after
+
+    now = datetime.datetime(2026, 10, 23, 12, 0, tzinfo=datetime.timezone.utc)
+    assert retry_after(header, now) == seconds
+
+
 @pytest.mark.parametrize("address, public", [
     ("8.8.8.8", True), ("2606:4700::1111", True), ("64:ff9b::808:808", True),
     ("127.0.0.1", False), ("0.0.0.0", False), ("10.1.2.3", False), ("172.16.0.1", False), ("192.168.1.1", False),
@@ -783,7 +900,7 @@ async def test_a_slow_receiver_runs_out_of_time(app_module, monkeypatch, receive
     receiver.delay = 3
     start = asyncio.get_running_loop().time()
     async with webhooks.client() as client:
-        assert await webhooks.send(client, receiver.url, SECRET, "msg_slow", "{}") == (None, "Timeout")
+        assert await webhooks.send(client, receiver.url, SECRET, "msg_slow", "{}") == (None, "Timeout", None)
     assert asyncio.get_running_loop().time() - start < 2
 
 

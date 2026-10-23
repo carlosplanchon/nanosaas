@@ -13,6 +13,11 @@ with its libraries:
   "<id>.<timestamp>.<body>", with the webhook's secret.
 - Only a 2xx answer delivers it. Others, timeouts and errors get more
   attempts, for about 3 days (RETRIES), except a 410.
+- As Standard Webhooks recommends, a receiver under load, which answers
+  429, 502 or 504, gets the webhook's events more slowly: they wait
+  THROTTLE before the next one goes. An answer with a Retry-After header,
+  like a 503's, makes them wait as long as it asks, up to MAX_WAIT, and its
+  event's next attempt too, if later than its schedule's.
 - As Standard Webhooks recommends, the worker disables a webhook whose URL
   answers 410, which says it wants no more events, or whose attempts keep
   failing for DISABLE_AFTER, without one that delivers its event: the
@@ -28,6 +33,7 @@ ones would let users reach the server's internal services.
 import asyncio
 import base64
 import datetime
+import email.utils
 import hashlib
 import hmac
 import http.cookiejar
@@ -41,7 +47,7 @@ import time
 
 import httpx
 from tortoise import timezone
-from tortoise.expressions import F, Subquery
+from tortoise.expressions import F, Q, Subquery
 
 from shared import CONFIG
 from web.db_models import Webhook, WebhookDelivery
@@ -61,6 +67,12 @@ DEFAULT_PORTS = {"https": 443, "http": 80}
 # 10 attempts in about 3 days. Each delay gets up to a tenth more, at random, so
 # the retries of many deliveries don't all come at once.
 RETRIES = [0, 5, 5 * 60, 30 * 60, 2 * 3600, 5 * 3600, 10 * 3600, 14 * 3600, 20 * 3600, 24 * 3600]
+# The answers of a receiver under load, as Standard Webhooks says, after which
+# the webhook's events wait THROTTLE: unless the answer says how long with
+# Retry-After, which any answer can have. Up to MAX_WAIT, the longest step of RETRIES.
+UNDER_LOAD = {429, 502, 504}
+THROTTLE = datetime.timedelta(minutes=1)
+MAX_WAIT = datetime.timedelta(days=1)
 # A webhook whose attempts keep failing for this long gets disabled: a bit less
 # than the attempts of an event, so one that fails all of them disables it.
 DISABLE_AFTER = datetime.timedelta(days=3)
@@ -196,11 +208,14 @@ def client() -> httpx.AsyncClient:
     )
 
 
-async def send(client: httpx.AsyncClient, url: str, secret: str, message_id: str, payload: str) -> tuple[int | None, str]:
+async def send(
+    client: httpx.AsyncClient, url: str, secret: str, message_id: str, payload: str
+) -> tuple[int | None, str, str | None]:
     """
     Send an event to a webhook's URL, signed, within DEADLINE seconds: the
-    status of the answer, if there was one, and how it went, as the page shows
-    it. It tries each address of the host until one takes the connection.
+    status of the answer, if there was one, how it went, as the page shows
+    it, and its Retry-After header. It tries each address of the host until
+    one takes the connection.
     """
     try:
         async with asyncio.timeout(DEADLINE):
@@ -223,31 +238,34 @@ async def send(client: httpx.AsyncClient, url: str, secret: str, message_id: str
                         "POST", parsed.copy_with(host=address), content=body, headers=headers,
                         extensions={"sni_hostname": host},
                     ) as response:
-                        # Without reading the body: only the status matters.
-                        return response.status_code, f"{response.status_code} {response.reason_phrase}"
+                        # Without reading the body: only the status matters, and how long to wait.
+                        answer = f"{response.status_code} {response.reason_phrase}"
+                        return response.status_code, answer, response.headers.get("retry-after")
                 except httpx.ConnectError as e:
                     error = e
             raise error
     except Undeliverable as e:
-        return None, str(e)
+        return None, str(e), None
     except (TimeoutError, httpx.TimeoutException):
-        return None, "Timeout"
+        return None, "Timeout", None
     except httpx.HTTPError as e:
-        return None, f"{type(e).__name__}: {e}"
+        return None, f"{type(e).__name__}: {e}", None
 
 
 async def claim_due(limit: int = BATCH) -> list[WebhookDelivery]:
     """
     Claim the pending deliveries that are due, up to limit, for CLAIM, but
-    not those of disabled webhooks, which wait. Every worker process looks
-    for them: the conditional update of next_attempt_at lets only one of them
-    take each delivery, like TaskHistory.start() with the tasks.
+    not those of disabled webhooks, nor of the ones whose events wait (see
+    throttle()). Every worker process looks for them: the conditional update
+    of next_attempt_at lets only one of them take each delivery, like
+    TaskHistory.start() with the tasks.
     """
     if limit <= 0:
         return []
     now = timezone.now()
     due = await WebhookDelivery.filter(
-        status="PENDING", next_attempt_at__lte=now, webhook__disabled_at__isnull=True
+        Q(webhook__throttled_until__isnull=True) | Q(webhook__throttled_until__lte=now),
+        status="PENDING", next_attempt_at__lte=now, webhook__disabled_at__isnull=True,
     ).order_by("next_attempt_at").limit(limit).prefetch_related("webhook")
     claimed = []
     for delivery in due:
@@ -265,17 +283,22 @@ async def attempt(client: httpx.AsyncClient, delivery: WebhookDelivery) -> None:
     """An attempt of a delivery this worker claimed: send it, and save how it went."""
     webhook = delivery.webhook
     try:
-        status, answer = await send(client, webhook.url, webhook.secret, delivery.message_id, delivery.payload)
+        status, answer, asked = await send(client, webhook.url, webhook.secret, delivery.message_id, delivery.payload)
     except Exception:
         # Like a malformed secret: an attempt that failed all the same, so that the delivery
         # ends. The log has the traceback, the page only this.
         logger.exception("Can't send webhook delivery %s", delivery.message_id)
-        status, answer = None, "Error: the event couldn't be sent"
+        status, answer, asked = None, "Error: the event couldn't be sent", None
 
     now = timezone.now()
+    # How long the receiver asked to wait, if it did: up to MAX_WAIT.
+    wait = retry_after(asked, now)
+    if wait is not None:
+        wait = min(wait, MAX_WAIT.total_seconds())
+    delivered = status is not None and 200 <= status < 300
     fields = {"last_attempt_at": now, "last_response": answer[:200]}
     where = (delivery.message_id, host_of(webhook.url))
-    if status is not None and 200 <= status < 300:
+    if delivered:
         fields["status"] = "DELIVERED"
     elif status == 410 or delivery.attempts >= len(RETRIES):
         fields["status"] = "FAILED"
@@ -285,15 +308,59 @@ async def attempt(client: httpx.AsyncClient, delivery: WebhookDelivery) -> None:
         )
     else:
         delay = RETRIES[delivery.attempts] * random.uniform(1, 1.1)
+        # Not sooner than the receiver asked.
+        if wait is not None:
+            delay = max(delay, wait)
         fields["next_attempt_at"] = now + datetime.timedelta(seconds=delay)
         logger.info("Webhook delivery %s to %s failed, attempt %d of %d: %s", *where, delivery.attempts, len(RETRIES), answer)
     try:
         # Only while this worker's claim holds.
         await WebhookDelivery.filter(id=delivery.id, next_attempt_at=delivery.next_attempt_at).update(**fields)
         await track(webhook, status, answer, now)
+        # The webhook's other events wait too, as long as it asked, or THROTTLE if it's under load.
+        if not delivered and (wait is not None or status in UNDER_LOAD):
+            await throttle(webhook, now + (THROTTLE if wait is None else datetime.timedelta(seconds=wait)))
     except Exception as e:
         # Its claim ends, and then a worker sends it again.
         logger.error("Can't save the attempt of webhook delivery %s: %s", delivery.message_id, e)
+
+
+def retry_after(header: str | None, now: datetime.datetime) -> float | None:
+    """
+    The seconds that an answer's Retry-After header asks to wait: a whole
+    number of them, or a date, which may have passed. None without one, or
+    with one that's neither.
+    """
+    if header is None:
+        return None
+    header = header.strip()
+    if header.isascii() and header.isdigit():
+        return float(header)
+    try:
+        moment = email.utils.parsedate_to_datetime(header)
+    except Exception:
+        # Whatever the receiver wrote: an attempt must be saved even then, or its
+        # claim would end, again and again. A huge year overflows in Python 3.11.
+        return None
+    if moment.tzinfo is None:
+        # A date with -0000, which the standard reads as UTC too.
+        moment = moment.replace(tzinfo=datetime.timezone.utc)
+    return max(0.0, (moment - now).total_seconds())
+
+
+async def throttle(webhook: Webhook, until: datetime.datetime) -> None:
+    """
+    Make a webhook's events wait until then, unless they wait longer already:
+    the workers don't claim them meanwhile, and their attempts aren't spent.
+    Only while its URL is the one the attempt went to, like track().
+    """
+    if await Webhook.filter(
+        Q(throttled_until__isnull=True) | Q(throttled_until__lt=until), id=webhook.id, url=webhook.url
+    ).update(throttled_until=until):
+        logger.info(
+            "The events of the webhook of account %d, to %s, wait until %s",
+            webhook.account_id, host_of(webhook.url), until.isoformat(timespec="seconds"),
+        )
 
 
 async def track(webhook: Webhook, status: int | None, answer: str, now: datetime.datetime) -> None:

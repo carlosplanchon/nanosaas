@@ -383,6 +383,9 @@ class Webhook(Model):
     # wait, unsent, until its account enables it again (see webhooks.py).
     disabled_at = fields.DatetimeField(null=True)
     disabled_reason = fields.CharField(max_length=300, null=True)
+    # Until when its events wait, as an answer asked, with a 429, a 502, a 504 or
+    # a Retry-After (see webhooks.py). None, or a time that passed, while they don't.
+    throttled_until = fields.DatetimeField(null=True)
 
 
 class WebhookDelivery(Model):

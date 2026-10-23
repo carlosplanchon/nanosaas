@@ -857,8 +857,8 @@ DELIVERY_FIELDS = ("id", "message_id", "type", "task_id", "status", "attempts", 
 # How often an account can send a test event to its webhook.
 WEBHOOK_TEST_INTERVAL = datetime.timedelta(seconds=10)
 # A webhook as it is while it works, which enabling it again, or saving its URL,
-# sets: not disabled, and without failures (see webhooks.py).
-WEBHOOK_WORKING = {"failing_since": None, "disabled_at": None, "disabled_reason": None}
+# sets: not disabled, without failures, and with its events not waiting (see webhooks.py).
+WEBHOOK_WORKING = {"failing_since": None, "disabled_at": None, "disabled_reason": None, "throttled_until": None}
 
 
 class WebhookIn(BaseModel):
