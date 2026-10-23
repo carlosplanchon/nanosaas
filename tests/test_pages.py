@@ -130,7 +130,7 @@ async def test_pages_redirect_to_login_without_a_valid_session(server, db, accou
     }[session]
 
     async with client_for(server, cookie) as client:
-        for page in ("/userpanel", "/user/api_key_page", f"/task_details/{task_id}"):
+        for page in ("/userpanel", "/user/api_key_page", f"/task_details/{task_id}", "/user/export"):
             r = await client.get(page)
             assert (r.status_code, r.headers.get("location")) == (307, "/"), page
 

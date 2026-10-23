@@ -176,11 +176,15 @@
             </div>
         </div>
 
-        <!-- Deleting the account: at the end, apart from the other buttons. Its
-             script asks first: the Content-Security-Policy blocks onsubmit. -->
-        <form method="post" action="{{ root_prefix }}/user/delete_account" id="delete-account" class="my-10 text-center">
-            <button class="text-sm text-red-600 hover:underline">Delete Account</button>
-        </form>
+        <!-- The account's data, as a JSON file, and deleting the account: at the end, apart
+             from the other buttons. Its script asks before deleting it: the
+             Content-Security-Policy blocks onsubmit. -->
+        <div class="flex justify-center items-baseline gap-6 my-10">
+            <a href="{{ root_prefix }}/user/export" class="text-sm text-blue-500 hover:underline">Download My Data</a>
+            <form method="post" action="{{ root_prefix }}/user/delete_account" id="delete-account">
+                <button class="text-sm text-red-600 hover:underline">Delete Account</button>
+            </form>
+        </div>
     </div>
 
     <!-- Its script, from a file: the Content-Security-Policy blocks the ones written here -->

@@ -11,6 +11,8 @@ import hashlib
 
 import inspect
 
+import json
+
 import logging
 
 import secrets
@@ -30,6 +32,7 @@ from fastapi import FastAPI, Depends, Header, HTTPException, Query, Security, Re
 from fastapi.responses import RedirectResponse
 from fastapi.responses import HTMLResponse
 from fastapi.responses import JSONResponse
+from fastapi.responses import StreamingResponse
 
 # this is the part that puts the lock icon to the docs
 from fastapi.security import APIKeyCookie
@@ -656,20 +659,22 @@ async def task_history_page(account: Account, before: str | None, limit: int) ->
     # Read it again, after the updates.
     rows = await page
     return TaskHistoryOut(
-        tasks=[
-            TaskHistoryItem(
-                task_id=task.task_id,
-                task_type=task.task_type,
-                parameters=task.parameters,
-                status=task.status,
-                result=task.result,
-                created_at=task.created_at,
-                started=task.started_at is not None,
-                cost=task.cost
-            )
-            for task in rows[:limit]
-        ],
+        tasks=[history_item(task) for task in rows[:limit]],
         has_more=len(rows) > limit
+    )
+
+
+def history_item(task: TaskHistory) -> TaskHistoryItem:
+    """A task as the history gives it: in its pages, and in the account's export."""
+    return TaskHistoryItem(
+        task_id=task.task_id,
+        task_type=task.task_type,
+        parameters=task.parameters,
+        status=task.status,
+        result=task.result,
+        created_at=task.created_at,
+        started=task.started_at is not None,
+        cost=task.cost
     )
 
 
@@ -749,18 +754,20 @@ async def credit_history_page(account: Account, before: int | None, limit: int) 
     # One more than the page: if it's there, there are more.
     rows = await movements.order_by("-created_at", "-id").limit(limit + 1)
     return CreditHistoryOut(
-        movements=[
-            CreditMovementItem(
-                id=movement.id,
-                amount=movement.amount,
-                balance=movement.balance,
-                reason=movement.reason,
-                task_id=movement.task_id,
-                created_at=movement.created_at,
-            )
-            for movement in rows[:limit]
-        ],
+        movements=[movement_item(movement) for movement in rows[:limit]],
         has_more=len(rows) > limit
+    )
+
+
+def movement_item(movement: CreditMovement) -> CreditMovementItem:
+    """A credit movement as the credit history gives it: in its pages, and in the account's export."""
+    return CreditMovementItem(
+        id=movement.id,
+        amount=movement.amount,
+        balance=movement.balance,
+        reason=movement.reason,
+        task_id=movement.task_id,
+        created_at=movement.created_at,
     )
 
 
@@ -818,8 +825,10 @@ async def create_or_regenerate_api_key(
     return {"api_key": new_api_key}
 
 
-# The latest deliveries of a webhook that the API key page shows.
+# The latest deliveries of a webhook that the API key page shows, with these
+# fields: without their payloads.
 WEBHOOK_DELIVERIES_SHOWN = 20
+DELIVERY_FIELDS = ("id", "message_id", "type", "task_id", "status", "attempts", "created_at", "last_response")
 # How often an account can send a test event to its webhook.
 WEBHOOK_TEST_INTERVAL = datetime.timedelta(seconds=10)
 # A webhook as it is while it works, which enabling it again, or saving its URL,
@@ -836,12 +845,9 @@ async def webhook_of(account: Account) -> dict:
     webhook = await Webhook.get_or_none(account_id=account.id)
     if webhook is None:
         return {"url": None, "secret": None, "disabled_at": None, "disabled_reason": None, "failed": 0, "deliveries": []}
-    # Without their payloads, which the page doesn't show.
     deliveries = await WebhookDelivery.filter(webhook_id=webhook.id).order_by(
         "-created_at", "-id"
-    ).limit(WEBHOOK_DELIVERIES_SHOWN).only(
-        "id", "message_id", "type", "task_id", "status", "attempts", "created_at", "last_response"
-    )
+    ).limit(WEBHOOK_DELIVERIES_SHOWN).only(*DELIVERY_FIELDS)
     return {
         "url": webhook.url,
         "secret": webhook.secret,
@@ -850,19 +856,21 @@ async def webhook_of(account: Account) -> dict:
         "disabled_reason": webhook.disabled_reason,
         # The events that failed, which the page can send again.
         "failed": await WebhookDelivery.filter(webhook_id=webhook.id, status="FAILED").count(),
-        "deliveries": [
-            {
-                "id": delivery.message_id,
-                "type": delivery.type,
-                "task_id": delivery.task_id,
-                "status": delivery.status,
-                "attempts": delivery.attempts,
-                "created_at": delivery.created_at.isoformat(),
-                # The receiver's answer, from another server: the page shows it as text.
-                "last_response": delivery.last_response,
-            }
-            for delivery in deliveries
-        ],
+        "deliveries": [delivery_item(delivery) for delivery in deliveries],
+    }
+
+
+def delivery_item(delivery: WebhookDelivery) -> dict:
+    """A delivery of the webhook as the API key page shows it, and the account's export."""
+    return {
+        "id": delivery.message_id,
+        "type": delivery.type,
+        "task_id": delivery.task_id,
+        "status": delivery.status,
+        "attempts": delivery.attempts,
+        "created_at": delivery.created_at.isoformat(),
+        # The receiver's answer, from another server: the page shows it as text.
+        "last_response": delivery.last_response,
     }
 
 
@@ -960,6 +968,127 @@ async def resend_webhook_events(user: OpenID = Depends(get_logged_user)):
         last_attempt_at=None, last_response=None,
     )
     return await webhook_of(account)
+
+
+# The rows the account's export reads at a time: it sends them as it reads them,
+# instead of holding the account's whole history in memory. As many as the
+# largest page of the history, so the event loop doesn't spend longer on each
+# one, without serving the other requests, than on a page of the history.
+EXPORT_PAGE = TASK_HISTORY_MAX_LIMIT
+
+
+async def pages_in_order(rows) -> typing.AsyncIterator[list]:
+    """
+    The rows of a query, the oldest first, EXPORT_PAGE at a time. Each page
+    starts right after the last row of the one before, as the history's
+    pages do, so the rows added meanwhile, the newest, come in the last one.
+    """
+    page = await rows.order_by("created_at", "id").limit(EXPORT_PAGE)
+    while page:
+        yield page
+        if len(page) < EXPORT_PAGE:
+            return
+        last = page[-1]
+        page = await rows.filter(
+            Q(created_at__gt=last.created_at) | Q(created_at=last.created_at, id__gt=last.id),
+            created_at__gte=last.created_at
+        ).order_by("created_at", "id").limit(EXPORT_PAGE)
+
+
+def compact_json(value) -> str:
+    """JSON without spaces, as Pydantic writes it, and with each character as it is, in UTF-8."""
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+async def json_array(pages: typing.AsyncIterator[list], encode: typing.Callable) -> typing.AsyncIterator[str]:
+    """A JSON array of the rows of the pages, each as encode() writes it, one a line, in a piece for each page."""
+    separator = "\n    "
+    yield "["
+    async for page in pages:
+        yield separator + ",\n    ".join(map(encode, page))
+        separator = ",\n    "
+    yield "\n  ]" if separator == ",\n    " else "]"
+
+
+async def account_export(account: Account) -> typing.AsyncIterator[str]:
+    """
+    The account's data, as a JSON document, in pieces: its profile and its
+    webhook, and its tasks, credit history and webhook events, as the API
+    and the API key page give them, the oldest first.
+    """
+    webhook = await Webhook.get_or_none(account_id=account.id)
+    head = {
+        "exported_at": datetime.datetime.now(tz=datetime.timezone.utc).isoformat(),
+        "account": {
+            "google_id": account.google_id,
+            "email": account.email,
+            "first_name": account.first_name,
+            "last_name": account.last_name,
+            "display_name": account.display_name,
+            "picture": account.picture,
+            "provider": account.provider,
+            "created_at": account.created_at.isoformat(),
+            "credits": account.credits,
+            # Only the start of the API key, as the API key page shows it: the key isn't
+            # stored, and its hash is no use to anyone else.
+            "api_key_prefix": account.api_key_prefix,
+        },
+        # Without its secret, which signs its events: a credential, like the API key.
+        "webhook": None if webhook is None else {
+            "url": webhook.url,
+            "created_at": webhook.created_at.isoformat(),
+            "disabled_at": webhook.disabled_at and webhook.disabled_at.isoformat(),
+            "disabled_reason": webhook.disabled_reason,
+        },
+    }
+    # Each row's JSON, written by Pydantic's own encoder where the API uses its models: a
+    # few times faster than json.dumps() of model_dump().
+    lists = [
+        ("tasks", TaskHistory.filter(user=account), lambda task: history_item(task).model_dump_json()),
+        (
+            "credit_history", CreditMovement.filter(account_id=account.id),
+            lambda movement: movement_item(movement).model_dump_json(),
+        ),
+        (
+            "webhook_events",
+            None if webhook is None else WebhookDelivery.filter(webhook_id=webhook.id).only(*DELIVERY_FIELDS),
+            lambda delivery: compact_json(delivery_item(delivery)),
+        ),
+    ]
+
+    yield "{\n"
+    for name, value in head.items():
+        yield f"  {json.dumps(name)}: {compact_json(value)},\n"
+    for index, (name, rows, encode) in enumerate(lists):
+        yield f"  {json.dumps(name)}: "
+        if rows is None:
+            yield "[]"
+        else:
+            async for piece in json_array(pages_in_order(rows), encode):
+                yield piece
+        yield ",\n" if index < len(lists) - 1 else "\n}\n"
+
+
+# Only with the session, like the webhook's routes: a leaked API key can't get the
+# account's profile, nor its webhook's URL, which may have a token in it. Out of
+# /docs, like the panel's.
+@app.get("/user/export", include_in_schema=False)
+async def export_account(user: OpenID = Depends(get_page_user)):
+    """Download the account's data as a JSON file (see account_export()), sent as it's read."""
+    # Its pending tasks first, as the history's pages refresh theirs: the lost ones fail,
+    # and their credits come back.
+    await refresh_tasks(await TaskHistory.filter(user__google_id=user.id, status="PENDING"))
+    account = await Account.get(google_id=user.id)
+    today = datetime.datetime.now(tz=datetime.timezone.utc).date()
+    return StreamingResponse(
+        account_export(account),
+        media_type="application/json",
+        headers={
+            "Content-Disposition": f'attachment; filename="nanosaas-account-{today}.json"',
+            # It has the account's data: no cache keeps a copy.
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @app.get("/user/api_key_page", response_class=HTMLResponse)

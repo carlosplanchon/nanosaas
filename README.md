@@ -165,7 +165,9 @@ It replaces the whole database, in a single transaction: if anything fails, the 
 
    It shows the tasks 50 at a time (`TASK_HISTORY_LIMIT` in `main_api.py`), the latest first, with buttons to the older and the newer ones, and a *Cancel* button on the pending ones that no worker started yet. It checks the ones it shows every 5 seconds while one is pending, every 30 seconds otherwise, and not while its tab is hidden. Below them, the credit history shows each change of the account's credits, with the balance it left (see step 5).
 
-   At the bottom of the panel, users can delete their account, with its tasks, its API key and its webhook: its sessions end on every device. All that's kept is a hash of its Google ID, so that logging in with it again starts an account without `INITIAL_CREDITS`: otherwise, deleting the account would be a way to get them again. The results of its tasks may stay in Redis for up to a day, until the result backend forgets them.
+   At the bottom of the panel, users can download their data, as a JSON file: their account's profile, its tasks and its credit history, as the API gives them, and its webhook, with its recent events. It has neither the API key, only its first characters, nor the webhook's secret, and it takes the session, not the API key: a leaked key can't get the account's profile, nor its webhook's URL. It goes out as the database gives it, a hundred rows at a time, so a long history neither fills the server's memory nor holds up its other requests: an account with 100,000 tasks takes about half a minute.
+
+   They can also delete their account, with its tasks, its API key and its webhook: its sessions end on every device. All that's kept is a hash of its Google ID, so that logging in with it again starts an account without `INITIAL_CREDITS`: otherwise, deleting the account would be a way to get them again. The results of its tasks may stay in Redis for up to a day, until the result backend forgets them.
 
 4. Use the API with the key from the *API Key & Webhook* page, sent in the `X-API-Key` header. A task starts with a POST to `/api/task/<name>`, with its parameters in a JSON object:
     ```bash
