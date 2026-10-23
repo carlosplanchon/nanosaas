@@ -9,11 +9,11 @@ requires-python = ">=3.11"
 # Pinned: uv.lock pins the packages they need too, and Dependabot updates them
 # all every week (.github/dependabot.yml).
 dependencies = [
-    "fastapi==0.143.3",
+    "fastapi==0.150.0",
     "uvicorn==0.54.0",
     "jinja2==3.1.6",
     # FastAPI doesn't cap these, so pin them too:
-    "starlette==1.8.0",
+    "starlette==1.9.0",
     "pydantic==2.14.1",
     # Single sign-on:
     "fastapi-sso==0.23.0",
