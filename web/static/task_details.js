@@ -35,9 +35,15 @@ function taskDetails() {
             return JSON.stringify(this.task.parameters, null, 2);
         },
 
-        // The result's JSON, with its colors, in the element.
-        showJson(element, value) {
-            element.innerHTML = highlightJson(value);
+        // The result in the element: its JSON, with its colors, once the task ended,
+        // as SUCCESS or FAILURE, and a dash before, or if it was canceled. A task
+        // that returned None has null.
+        showResult(element, task) {
+            if (['SUCCESS', 'FAILURE'].includes(task.status)) {
+                element.innerHTML = highlightJson(task.result);
+            } else {
+                element.textContent = '—';
+            }
         },
 
         fetchTaskDetails(taskId) {

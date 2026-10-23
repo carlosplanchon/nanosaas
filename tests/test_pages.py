@@ -13,6 +13,8 @@ pytestmark = pytest.mark.anyio
 
 REPO = Path(__file__).resolve().parent.parent
 EXPIRED = datetime.timedelta(minutes=-1)
+# How the static files whose URL has their hash are cached: for a year, without asking again.
+YEAR = "public, max-age=31536000, immutable"
 
 
 async def test_public_pages_and_static_files(anon):
@@ -83,6 +85,21 @@ def test_the_url_of_a_static_file_changes_with_it(app_module, tmp_path, monkeypa
     modified = script.stat().st_mtime_ns + 1_000_000_000
     os.utime(script, ns=(modified, modified))
     assert app_module.static_url("app.js") == f"/web/static/app.js?v={hashlib.sha256(b'two').hexdigest()[:12]}"
+
+
+async def test_a_static_file_with_its_hash_is_kept_for_a_year(anon, app_module):
+    # As the templates link it: its URL changes with it.
+    url = app_module.static_url("json.js")
+    r = await anon.get(url)
+    assert (r.status_code, r.headers["cache-control"]) == (200, YEAR)
+    # A browser that asks again anyway gets a 304, which says so too.
+    r = await anon.get(url, headers={"If-None-Match": r.headers["etag"]})
+    assert (r.status_code, r.headers["cache-control"]) == (304, YEAR)
+    # Not without the hash, nor with another one, like a URL of an old page after a
+    # deploy, or a new one that reaches a server not updated yet: it isn't that file.
+    for other in ("/web/static/json.js", "/web/static/json.js?v=000000000000", f"{url}0"):
+        r = await anon.get(other)
+        assert (r.status_code, r.headers.get("cache-control")) == (200, None), other
 
 
 def test_the_pages_load_their_scripts_and_styles_from_this_server():
@@ -161,3 +178,5 @@ async def test_pages_and_links_with_a_root_path(prefixed_server):
         assert 'href="/nanosaas/web/static/tailwind.css?v=' in r.text
         assert '<img src="/nanosaas/web/static/nanosaas_logo.svg?v=' in r.text
         assert (await client.get("/nanosaas/web/static/nanosaas_logo.svg")).status_code == 200
+        css = re.search(r'href="(/nanosaas/web/static/tailwind\.css\?v=\w+)"', r.text).group(1)
+        assert (await client.get(css)).headers["cache-control"] == YEAR

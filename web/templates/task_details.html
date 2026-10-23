@@ -24,7 +24,7 @@
             <p class="text-gray-700"><strong>Cost in credits:</strong> <span x-text="task.cost"></span></p>
             <p class="text-gray-700"><strong>Created At:</strong> <span x-text="task.created_at"></span></p>
             <p class="text-gray-700 mt-4"><strong>Result:</strong></p>
-            <pre class="mt-1 p-3 bg-gray-50 border border-gray-200 rounded-md text-sm overflow-x-auto"><code x-effect="showJson($el, task.result)"></code></pre>
+            <pre class="mt-1 p-3 bg-gray-50 border border-gray-200 rounded-md text-sm overflow-x-auto"><code x-effect="showResult($el, task)"></code></pre>
             <a href="{{ root_prefix }}/userpanel" class="mt-4 inline-block bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded-md">
                 Back to Dashboard
             </a>

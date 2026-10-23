@@ -122,7 +122,7 @@
                                         <button x-on:click="cancelTask(task)" class="block mx-auto text-sm text-red-600 hover:underline">Cancel</button>
                                     </template>
                                 </td>
-                                <td class="border p-2 text-center" x-effect="showJson($el, task.result)"></td>
+                                <td class="border p-2 text-center" x-effect="showResult($el, task)"></td>
                                 <td class="border p-2 text-center" x-text="task.created_at"></td>
                                 <td class="border p-2 text-center">
                                     <a :href="detailsUrl(task)" class="text-blue-500 hover:underline">View Details</a>

@@ -132,9 +132,15 @@ function taskManager() {
             return JSON.stringify(option);
         },
 
-        // A result's JSON, with its colors, in the element.
-        showJson(element, value) {
-            element.innerHTML = highlightJson(value);
+        // A task's result in the element: its JSON, with its colors, once it ended,
+        // as SUCCESS or FAILURE, and a dash before, or if it was canceled. A task
+        // that returned None has null.
+        showResult(element, task) {
+            if (['SUCCESS', 'FAILURE'].includes(task.status)) {
+                element.innerHTML = highlightJson(task.result);
+            } else {
+                element.textContent = '—';
+            }
         },
 
         // The page of a task, or of a movement's task.

@@ -58,7 +58,8 @@ from tortoise.transactions import in_transaction
 
 from fastapi.staticfiles import StaticFiles
 
-from starlette.datastructures import Headers, MutableHeaders
+from starlette.datastructures import Headers, MutableHeaders, QueryParams
+from starlette.responses import Response
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
@@ -238,7 +239,31 @@ app.add_middleware(SecurityHeadersMiddleware)
 
 # Mount static files directory
 STATIC_DIRECTORY = Path("web/static")
-app.mount("/web/static", StaticFiles(
+# How browsers and proxies keep a static file whose URL has the hash of what the
+# server has, from static_url(): for a year, without asking for it again, even
+# when the page reloads. The next version of the file has another URL.
+CACHE_FOR_A_YEAR = "public, max-age=31536000, immutable"
+
+
+class VersionedStaticFiles(StaticFiles):
+    """
+    The files of web/static, kept for a year when their URL has their hash
+    (see static_url()). Not others, nor one with another hash: in a deploy,
+    a page's new URL may reach a server that still has the old file.
+    """
+
+    async def get_response(self, path: str, scope) -> Response:
+        response = await super().get_response(path, scope)
+        version = QueryParams(scope["query_string"]).get("v")
+        # A 304 too, for a browser that asks again anyway.
+        if version is not None and response.status_code in (200, 304):
+            file = STATIC_DIRECTORY / path
+            if version == content_version(file, file.stat().st_mtime_ns):
+                response.headers["Cache-Control"] = CACHE_FOR_A_YEAR
+        return response
+
+
+app.mount("/web/static", VersionedStaticFiles(
         directory=STATIC_DIRECTORY
     ),
     name="static"
@@ -254,10 +279,9 @@ def content_version(path: Path, modified: int) -> str:
 def static_url(name: str) -> str:
     """
     The URL of a file of web/static for the templates, with ?v= and a hash
-    of its contents. The files are served without Cache-Control, so browsers
-    reuse them for a while without asking, guessing from how old they are.
-    With the hash, a file's URL changes with it: after a deploy that changes
-    it, browsers get the new one.
+    of its contents. With the hash, a file's URL changes with it, so browsers
+    keep each one for a year without asking for it again (see
+    VersionedStaticFiles): after a deploy that changes it, they get the new one.
     """
     path = STATIC_DIRECTORY / name
     return f"{root_prefix}/web/static/{name}?v={content_version(path, path.stat().st_mtime_ns)}"

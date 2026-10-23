@@ -1,6 +1,6 @@
 // highlightJson(value): the value as JSON, in HTML, with its keys, strings,
 // numbers, and true, false and null in spans of Tailwind colors. The pages put
-// it in an element's innerHTML with showJson(), from x-effect: Alpine's CSP
+// it in an element's innerHTML with showResult(), from x-effect: Alpine's CSP
 // build has no x-html.
 // scripts/build_css.py reads this file too, for these classes.
 
