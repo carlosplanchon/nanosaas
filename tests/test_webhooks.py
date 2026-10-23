@@ -16,14 +16,18 @@ import pytest
 from standardwebhooks.webhooks import Webhook as Verifier
 from tortoise import Tortoise
 
-from tests.helpers import Receiver, client_for, create_account, insert_task, task_row, wait_for_lock
+from tests.helpers import Receiver, client_for, create_account, insert_task, task_row, wait_for_lock, wait_until_done
 
 pytestmark = pytest.mark.anyio
 
-NO_WEBHOOK = {"url": None, "secret": None, "deliveries": []}
+NO_WEBHOOK = {"url": None, "secret": None, "disabled_at": None, "disabled_reason": None, "failed": 0, "deliveries": []}
 # How many attempts a delivery gets: RETRIES in webhooks.py.
 ATTEMPTS = 10
 SECRET = "whsec_" + base64.b64encode(b"k" * 32).decode()
+# Why the worker disables a webhook, after a 410.
+GONE = "Its URL answered 410 Gone: it wants no more events."
+# What the user panel says while the account's webhook is disabled.
+DISABLED_NOTICE = "Your webhook is disabled"
 
 
 @pytest.fixture
@@ -107,6 +111,36 @@ def attempted(row):
     return row["last_response"] is not None
 
 
+async def insert_delivery(db, account, attempts=0):
+    """A test event for the account's webhook, due now, after `attempts` attempts: its ID."""
+    message_id = f"msg_{uuid.uuid4().hex}"
+    await db.execute(
+        """
+        INSERT INTO webhookdelivery (webhook_id, message_id, type, payload, created_at, status, attempts, next_attempt_at)
+        SELECT id, $2, 'webhook.test', '{}', now(), 'PENDING', $3, now() FROM webhook WHERE account_id = $1
+        """,
+        account.id, message_id, attempts,
+    )
+    return message_id
+
+
+async def webhook_row(db, account):
+    return await db.fetchrow("SELECT * FROM webhook WHERE account_id = $1", account.id)
+
+
+async def wait_for_webhook(db, account, until, timeout=30):
+    """Wait until the row of the account's webhook passes `until`, and return it."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not until(row := await webhook_row(db, account)):
+        assert asyncio.get_running_loop().time() < deadline, dict(row)
+        await asyncio.sleep(0.2)
+    return row
+
+
+def disabled(row):
+    return row["disabled_at"] is not None
+
+
 async def test_an_account_sets_its_webhook_from_the_api_key_page(webhook_server, webhook_account, receiver):
     async with client_for(webhook_server, webhook_account.cookie) as user:
         assert (await user.get("/user/webhook")).json() == NO_WEBHOOK
@@ -126,19 +160,21 @@ async def test_an_account_sets_its_webhook_from_the_api_key_page(webhook_server,
 
         assert (await user.delete("/user/webhook")).json() == NO_WEBHOOK
         assert (await user.get("/user/webhook")).json() == NO_WEBHOOK
-        for path in ("/user/webhook/secret", "/user/webhook/test"):
+        for path in ("/user/webhook/secret", "/user/webhook/test", "/user/webhook/enable", "/user/webhook/resend"):
             r = await user.post(path)
             assert (r.status_code, r.json()) == (404, {"detail": "Set a webhook URL first."})
 
-        # The page has the webhook's inputs, which its script fills.
+        # The page has the webhook's inputs and buttons, which its script fills and shows.
         page = (await user.get("/user/api_key_page")).text
-        assert 'id="webhook_url"' in page and 'id="webhook_secret"' in page
+        for element in ("webhook_url", "webhook_secret", "webhook-enable", "webhook-resend"):
+            assert f'id="{element}"' in page
 
 
 async def test_the_webhook_takes_the_session_only(anon, account):
     requests = [
         ("GET", "/user/webhook"), ("PUT", "/user/webhook"), ("DELETE", "/user/webhook"),
         ("POST", "/user/webhook/secret"), ("POST", "/user/webhook/test"),
+        ("POST", "/user/webhook/enable"), ("POST", "/user/webhook/resend"),
     ]
     for method, path in requests:
         # Not even with an API key: a leaked one can't send the account's results somewhere else.
@@ -287,30 +323,142 @@ async def test_a_delivery_fails_after_its_last_attempt(
     webhook_server, webhook_worker, webhook_account, webhook_db, receiver
 ):
     await set_webhook(webhook_server, webhook_account, receiver.url)
-    # Its last attempt is due.
-    message_id = f"msg_{uuid.uuid4().hex}"
-    await webhook_db.execute(
-        """
-        INSERT INTO webhookdelivery (webhook_id, message_id, type, payload, created_at, status, attempts, next_attempt_at)
-        SELECT id, $2, 'webhook.test', '{}', now(), 'PENDING', $3, now() FROM webhook WHERE account_id = $1
-        """,
-        webhook_account.id, message_id, ATTEMPTS - 1,
-    )
     receiver.statuses = [503]
+    # Its last attempt is due.
+    message_id = await insert_delivery(webhook_db, webhook_account, attempts=ATTEMPTS - 1)
     row = await wait_for_delivery(webhook_db, message_id, status_is("FAILED"))
     assert (row["attempts"], row["last_response"]) == (ATTEMPTS, "503 Service Unavailable")
     assert len(receiver.received) == 1
 
 
-async def test_a_410_stops_the_attempts(webhook_server, webhook_worker, webhook_account, webhook_db, receiver):
+async def test_a_410_stops_the_attempts_and_disables_the_webhook(
+    webhook_server, webhook_worker, webhook_account, webhook_db, receiver
+):
     await set_webhook(webhook_server, webhook_account, receiver.url)
     receiver.statuses = [410]
     queued = await send_test_event(webhook_server, webhook_account)
     row = await wait_for_delivery(webhook_db, queued["id"], status_is("FAILED"))
     assert (row["attempts"], row["last_response"]) == (1, "410 Gone")
+    # The receiver wants no more events: as Standard Webhooks says, the worker stops sending them.
+    await wait_for_webhook(webhook_db, webhook_account, disabled)
+    async with client_for(webhook_server, webhook_account.cookie) as user:
+        webhook = (await user.get("/user/webhook")).json()
+    assert (webhook["disabled_reason"], webhook["failed"]) == (GONE, 1)
+    assert datetime.datetime.fromisoformat(webhook["disabled_at"]) <= datetime.datetime.now(tz=datetime.timezone.utc)
+    log = webhook_worker.log.read_text()
+    assert f"The webhook of account {webhook_account.id}, to 127.0.0.1, was disabled: {GONE}" in log
     # The next attempt would come 5 seconds later.
     await asyncio.sleep(7)
     assert len(receiver.received) == 1
+
+
+async def test_attempts_that_fail_for_3_days_disable_the_webhook(
+    webhook_server, webhook_worker, webhook_account, webhook_db, receiver
+):
+    await set_webhook(webhook_server, webhook_account, receiver.url)
+    # Like the last attempt of an event whose attempts all failed, the first one 3 days ago.
+    await webhook_db.execute(
+        "UPDATE webhook SET failing_since = now() - interval '3 days' WHERE account_id = $1", webhook_account.id
+    )
+    receiver.statuses = [503]
+    message_id = await insert_delivery(webhook_db, webhook_account, attempts=ATTEMPTS - 1)
+    await wait_for_delivery(webhook_db, message_id, status_is("FAILED"))
+    row = await wait_for_webhook(webhook_db, webhook_account, disabled)
+    assert row["disabled_reason"] == "Its attempts failed for 3 days in a row. The last one: 503 Service Unavailable."
+
+
+async def test_a_delivered_event_ends_the_failures(
+    webhook_server, webhook_worker, webhook_account, webhook_db, receiver
+):
+    await set_webhook(webhook_server, webhook_account, receiver.url)
+    # Failing for almost 3 days: one more failure doesn't disable it yet.
+    await webhook_db.execute(
+        "UPDATE webhook SET failing_since = now() - interval '3 days' + interval '1 hour' WHERE account_id = $1",
+        webhook_account.id,
+    )
+    receiver.statuses = [500]
+    queued = await send_test_event(webhook_server, webhook_account)
+    await wait_for_delivery(webhook_db, queued["id"], attempted)
+    # Its next attempt, 5 seconds later, delivers it.
+    await wait_for_delivery(webhook_db, queued["id"], status_is("DELIVERED"))
+    row = await wait_for_webhook(webhook_db, webhook_account, lambda row: row["failing_since"] is None)
+    assert row["disabled_at"] is None
+
+
+async def test_a_disabled_webhook_s_events_wait_until_it_s_enabled(
+    webhook_server, webhook_worker, webhook_account, webhook_db, receiver
+):
+    await set_webhook(webhook_server, webhook_account, receiver.url)
+    await webhook_db.execute(
+        "UPDATE webhook SET failing_since = now() - interval '3 days', disabled_at = now(), disabled_reason = $2 "
+        "WHERE account_id = $1",
+        webhook_account.id, GONE,
+    )
+    async with client_for(webhook_server, webhook_account.cookie) as user:
+        # The panel says so, and the API key page why.
+        assert DISABLED_NOTICE in (await user.get("/userpanel")).text
+        task_id = (await user.post("/task/divide", json={"x": 6, "y": 3})).json()["id"]
+        await wait_until_done(user, task_id)
+        # Its task's event waits.
+        await asyncio.sleep(3)
+        [delivery] = (await user.get("/user/webhook")).json()["deliveries"]
+        assert (delivery["task_id"], delivery["status"], delivery["attempts"]) == (task_id, "PENDING", 0)
+        assert receiver.received == []
+        # Test events would wait too, and so would the failed ones sent again: the page sends neither.
+        for path in ("/user/webhook/test", "/user/webhook/resend"):
+            r = await user.post(path)
+            assert (r.status_code, r.json()) == (409, {"detail": "Enable the webhook first."})
+
+        receiver.statuses = [500]
+        enabled = (await user.post("/user/webhook/enable")).json()
+        assert (enabled["disabled_at"], enabled["disabled_reason"]) == (None, None)
+        # The event goes out. Its failures start again: one more doesn't disable it again,
+        # and the next attempt, 5 seconds later, delivers it.
+        first, second = await receiver.wait_for(2)
+        assert first.headers["webhook-id"] == second.headers["webhook-id"] == delivery["id"]
+        assert DISABLED_NOTICE not in (await user.get("/userpanel")).text
+
+
+async def test_saving_the_url_enables_the_webhook_again(webhook_server, webhook_account, webhook_db, receiver):
+    await set_webhook(webhook_server, webhook_account, receiver.url)
+    await webhook_db.execute(
+        "UPDATE webhook SET failing_since = now(), disabled_at = now(), disabled_reason = $2 WHERE account_id = $1",
+        webhook_account.id, GONE,
+    )
+    # The same URL, or another one: its failures are forgotten too.
+    webhook = await set_webhook(webhook_server, webhook_account, receiver.url)
+    assert (webhook["disabled_at"], webhook["disabled_reason"]) == (None, None)
+    assert (await webhook_row(webhook_db, webhook_account))["failing_since"] is None
+
+
+async def test_the_failed_events_are_sent_again_with_their_ids(
+    webhook_server, webhook_worker, webhook_account, webhook_db, receiver
+):
+    await set_webhook(webhook_server, webhook_account, receiver.url)
+    # Two events that failed their last attempts, and one delivered.
+    receiver.statuses = [503, 503]
+    failed = [await insert_delivery(webhook_db, webhook_account, attempts=ATTEMPTS - 1) for _ in range(2)]
+    for message_id in failed:
+        await wait_for_delivery(webhook_db, message_id, status_is("FAILED"))
+    delivered = await insert_delivery(webhook_db, webhook_account)
+    await wait_for_delivery(webhook_db, delivered, status_is("DELIVERED"))
+    receiver.received.clear()
+
+    async with client_for(webhook_server, webhook_account.cookie) as user:
+        assert (await user.get("/user/webhook")).json()["failed"] == 2
+        webhook = (await user.post("/user/webhook/resend")).json()
+    # As new, with their IDs: receivers skip the ones they got.
+    assert webhook["failed"] == 0
+    resent = {(d["id"], d["status"], d["attempts"], d["last_response"]) for d in webhook["deliveries"] if d["id"] in failed}
+    assert resent == {(message_id, "PENDING", 0, None) for message_id in failed}
+    received = await receiver.wait_for(2)
+    assert sorted(r.headers["webhook-id"] for r in received) == sorted(failed)
+    for message_id in failed:
+        row = await wait_for_delivery(webhook_db, message_id, status_is("DELIVERED"))
+        assert row["attempts"] == 1
+    # Not the delivered one.
+    await asyncio.sleep(2)
+    assert len(receiver.received) == 2
 
 
 async def test_a_redirect_is_not_followed(webhook_server, webhook_worker, webhook_account, webhook_db, receiver):
@@ -515,6 +663,88 @@ async def test_the_cleanup_deletes_the_deliveries_that_ended_a_week_ago(own_data
     await cleanup()
     kept = {(delivery.status, (now - delivery.last_attempt_at).days) for delivery in await app.WebhookDelivery.all()}
     assert kept == {("DELIVERED", 1), ("FAILED", 1), ("PENDING", 8)}
+
+
+async def test_the_cleanup_deletes_the_events_that_waited_a_week_for_their_webhook(own_database):
+    from webhooks import cleanup
+
+    app = own_database
+    _, working = await own_webhook(app)
+    _, off = await own_webhook(app)
+    now = datetime.datetime.now(tz=datetime.timezone.utc)
+    await app.Webhook.filter(id=off.id).update(disabled_at=now - datetime.timedelta(days=8))
+    for webhook in (working, off):
+        for days in (1, 8):
+            await app.WebhookDelivery.queue(webhook, "webhook.test", {})
+            delivery = await app.WebhookDelivery.filter(webhook_id=webhook.id).order_by("-id").first()
+            await app.WebhookDelivery.filter(id=delivery.id).update(created_at=now - datetime.timedelta(days=days))
+    await cleanup()
+    # An enabled webhook's pending ones are being sent.
+    kept = {(delivery.webhook_id, (now - delivery.created_at).days) for delivery in await app.WebhookDelivery.all()}
+    assert kept == {(working.id, 1), (working.id, 8), (off.id, 1)}
+
+
+async def test_the_workers_skip_the_disabled_webhooks(own_database):
+    from webhooks import claim_due
+
+    app = own_database
+    _, working = await own_webhook(app)
+    _, off = await own_webhook(app)
+    await app.Webhook.filter(id=off.id).update(disabled_at=datetime.datetime.now(tz=datetime.timezone.utc))
+    for webhook in (working, off):
+        await app.WebhookDelivery.queue(webhook, "webhook.test", {})
+    assert [delivery.webhook_id for delivery in await claim_due()] == [working.id]
+
+
+async def webhook_after(app, webhook, status, answer, failing_since=None, url=None):
+    """The webhook after an attempt with that status and answer, as track() leaves it."""
+    from webhooks import track
+
+    now = datetime.datetime.now(tz=datetime.timezone.utc)
+    await app.Webhook.filter(id=webhook.id).update(failing_since=failing_since and now - failing_since)
+    if url is not None:
+        # Its URL changed while the attempt went to the one before.
+        await app.Webhook.filter(id=webhook.id).update(url=url)
+    await track(webhook, status, answer, now)
+    return await app.Webhook.get(id=webhook.id), now
+
+
+@pytest.mark.parametrize("failing_for, disables", [
+    (datetime.timedelta(days=3) - datetime.timedelta(minutes=1), False), (datetime.timedelta(days=3), True),
+])
+async def test_a_webhook_is_disabled_after_3_days_of_failed_attempts(own_database, failing_for, disables):
+    app = own_database
+    _, webhook = await own_webhook(app)
+    row, now = await webhook_after(app, webhook, 500, "500 Internal Server Error", failing_since=failing_for)
+    assert (row.disabled_at, row.disabled_reason) == (
+        (now, "Its attempts failed for 3 days in a row. The last one: 500 Internal Server Error.") if disables
+        else (None, None)
+    )
+
+
+async def test_the_first_failed_attempt_starts_the_failures_and_a_delivered_one_ends_them(own_database):
+    app = own_database
+    _, webhook = await own_webhook(app)
+    for status, answer in [(None, "Timeout"), (404, "404 Not Found"), (500, "500 Internal Server Error")]:
+        row, now = await webhook_after(app, webhook, status, answer)
+        assert (row.failing_since, row.disabled_at) == (now, None)
+    # A later failure keeps when they started.
+    row, _ = await webhook_after(app, webhook, 500, "500 Internal Server Error", failing_since=datetime.timedelta(hours=1))
+    assert datetime.timedelta(hours=1) <= datetime.datetime.now(tz=datetime.timezone.utc) - row.failing_since
+    for status in (200, 204, 299):
+        row, _ = await webhook_after(app, webhook, status, f"{status} OK", failing_since=datetime.timedelta(days=2))
+        assert row.failing_since is None
+
+
+async def test_an_attempt_to_the_url_before_doesn_t_change_the_webhook(own_database):
+    app = own_database
+    _, webhook = await own_webhook(app)
+    row, _ = await webhook_after(app, webhook, 410, "410 Gone", url="https://example.org/")
+    assert (row.failing_since, row.disabled_at) == (None, None)
+    row, _ = await webhook_after(
+        app, webhook, 200, "200 OK", failing_since=datetime.timedelta(days=1), url="https://example.net/"
+    )
+    assert row.failing_since is not None
 
 
 @pytest.mark.parametrize("address, public", [

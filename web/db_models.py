@@ -367,6 +367,13 @@ class Webhook(Model):
     # the worker signs each event with it.
     secret = fields.CharField(max_length=100)
     created_at = fields.DatetimeField(auto_now_add=True)
+    # When the first of the attempts that keep failing was: None after one
+    # that delivers its event. After DISABLE_AFTER, the worker disables it.
+    failing_since = fields.DatetimeField(null=True)
+    # When the worker disabled it, and why, as the pages show it: its events
+    # wait, unsent, until its account enables it again (see webhooks.py).
+    disabled_at = fields.DatetimeField(null=True)
+    disabled_reason = fields.CharField(max_length=300, null=True)
 
 
 class WebhookDelivery(Model):

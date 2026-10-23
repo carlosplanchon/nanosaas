@@ -12,8 +12,13 @@ with its libraries:
   webhook-signature is "v1," and the base64 of the HMAC-SHA256 of
   "<id>.<timestamp>.<body>", with the webhook's secret.
 - Only a 2xx answer delivers it. Others, timeouts and errors get more
-  attempts, for about 3 days (RETRIES), except a 410: the receiver doesn't
-  want that event anymore.
+  attempts, for about 3 days (RETRIES), except a 410.
+- As Standard Webhooks recommends, the worker disables a webhook whose URL
+  answers 410, which says it wants no more events, or whose attempts keep
+  failing for DISABLE_AFTER, without one that delivers its event: the
+  workers stop trying a URL that's gone. Its events wait, unsent, for up to
+  KEEP, until its account enables it again, or saves its URL. The pages say
+  so, and the API key page sends the failed events again.
 
 TaskHistory.finish() and cancel() record the events (WebhookDelivery), and
 each worker process sends them (deliver_webhooks()). They go only to public
@@ -36,10 +41,10 @@ import time
 
 import httpx
 from tortoise import timezone
-from tortoise.expressions import F
+from tortoise.expressions import F, Subquery
 
 from shared import CONFIG
-from web.db_models import WebhookDelivery
+from web.db_models import Webhook, WebhookDelivery
 
 logger = logging.getLogger(__name__)
 # httpx logs each request with its whole URL, which may have a token in it.
@@ -56,6 +61,9 @@ DEFAULT_PORTS = {"https": 443, "http": 80}
 # 10 attempts in about 3 days. Each delay gets up to a tenth more, at random, so
 # the retries of many deliveries don't all come at once.
 RETRIES = [0, 5, 5 * 60, 30 * 60, 2 * 3600, 5 * 3600, 10 * 3600, 14 * 3600, 20 * 3600, 24 * 3600]
+# A webhook whose attempts keep failing for this long gets disabled: a bit less
+# than the attempts of an event, so one that fails all of them disables it.
+DISABLE_AFTER = datetime.timedelta(days=3)
 # A worker claims each delivery it sends for this long: if it dies meanwhile, another one sends it then.
 CLAIM = datetime.timedelta(seconds=60)
 # Seconds a receiver has to connect, and for each read and write, and for the
@@ -66,7 +74,8 @@ DEADLINE = 30
 # slow receiver holds up only its own, and looks for more every POLL seconds.
 BATCH = 20
 POLL = 1
-# How long the page shows a delivery after its last attempt.
+# How long the page shows a delivery after its last attempt, and how long one
+# waits while its webhook is disabled.
 KEEP = datetime.timedelta(days=7)
 
 # The IPv6 addresses of NAT64, which reach the IPv4 address in their last 32 bits.
@@ -229,16 +238,16 @@ async def send(client: httpx.AsyncClient, url: str, secret: str, message_id: str
 
 async def claim_due(limit: int = BATCH) -> list[WebhookDelivery]:
     """
-    Claim the pending deliveries that are due, up to limit, for CLAIM. Every
-    worker process looks for them: the conditional update of next_attempt_at
-    lets only one of them take each delivery, like TaskHistory.start() with
-    the tasks.
+    Claim the pending deliveries that are due, up to limit, for CLAIM, but
+    not those of disabled webhooks, which wait. Every worker process looks
+    for them: the conditional update of next_attempt_at lets only one of them
+    take each delivery, like TaskHistory.start() with the tasks.
     """
     if limit <= 0:
         return []
     now = timezone.now()
     due = await WebhookDelivery.filter(
-        status="PENDING", next_attempt_at__lte=now
+        status="PENDING", next_attempt_at__lte=now, webhook__disabled_at__isnull=True
     ).order_by("next_attempt_at").limit(limit).prefetch_related("webhook")
     claimed = []
     for delivery in due:
@@ -281,15 +290,46 @@ async def attempt(client: httpx.AsyncClient, delivery: WebhookDelivery) -> None:
     try:
         # Only while this worker's claim holds.
         await WebhookDelivery.filter(id=delivery.id, next_attempt_at=delivery.next_attempt_at).update(**fields)
+        await track(webhook, status, answer, now)
     except Exception as e:
         # Its claim ends, and then a worker sends it again.
         logger.error("Can't save the attempt of webhook delivery %s: %s", delivery.message_id, e)
 
 
+async def track(webhook: Webhook, status: int | None, answer: str, now: datetime.datetime) -> None:
+    """
+    Keep how a webhook's attempts go, after one of them: since when they
+    fail, if they do, and disable the webhook after a 410, or once they
+    failed for DISABLE_AFTER. Only while its URL is the one the attempt went
+    to: a new one starts afresh.
+    """
+    same_url = Webhook.filter(id=webhook.id, url=webhook.url)
+    if status is not None and 200 <= status < 300:
+        await same_url.filter(failing_since__isnull=False).update(failing_since=None)
+        return
+    await same_url.filter(failing_since__isnull=True).update(failing_since=now)
+    if status == 410:
+        reason, due = f"Its URL answered {answer}: it wants no more events.", same_url
+    else:
+        reason = f"Its attempts failed for {DISABLE_AFTER.days} days in a row. The last one: {answer}."
+        due = same_url.filter(failing_since__lte=now - DISABLE_AFTER)
+    if await due.filter(disabled_at__isnull=True).update(disabled_at=now, disabled_reason=reason[:300]):
+        logger.warning(
+            "The webhook of account %d, to %s, was disabled: %s", webhook.account_id, host_of(webhook.url), reason
+        )
+
+
 async def cleanup() -> None:
-    """Delete the deliveries that ended, delivered or failed, more than KEEP ago."""
+    """
+    Delete the deliveries that ended, delivered or failed, more than KEEP
+    ago, and the ones that waited longer than that for their webhook,
+    disabled.
+    """
+    now = timezone.now()
+    await WebhookDelivery.filter(status__in=["DELIVERED", "FAILED"], last_attempt_at__lt=now - KEEP).delete()
     await WebhookDelivery.filter(
-        status__in=["DELIVERED", "FAILED"], last_attempt_at__lt=timezone.now() - KEEP
+        status="PENDING", created_at__lt=now - KEEP,
+        webhook_id__in=Subquery(Webhook.filter(disabled_at__isnull=False).values("id")),
     ).delete()
 
 

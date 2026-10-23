@@ -68,7 +68,7 @@ from taskiq_task import LOG_FORMAT, TaskLost, ping_postgres, ping_redis, queue_t
 
 from web.db_models import Account, CreditMovement, DeletedAccount, TaskHistory, Webhook, WebhookDelivery
 
-from webhooks import Undeliverable, check_url, new_secret
+from webhooks import KEEP as WEBHOOK_KEEP, Undeliverable, check_url, new_secret
 
 from shared import CONFIG
 from shared import CONFIG_PATH
@@ -822,6 +822,9 @@ async def create_or_regenerate_api_key(
 WEBHOOK_DELIVERIES_SHOWN = 20
 # How often an account can send a test event to its webhook.
 WEBHOOK_TEST_INTERVAL = datetime.timedelta(seconds=10)
+# A webhook as it is while it works, which enabling it again, or saving its URL,
+# sets: not disabled, and without failures (see webhooks.py).
+WEBHOOK_WORKING = {"failing_since": None, "disabled_at": None, "disabled_reason": None}
 
 
 class WebhookIn(BaseModel):
@@ -832,7 +835,7 @@ async def webhook_of(account: Account) -> dict:
     """The account's webhook as the API key page shows it, with its latest deliveries."""
     webhook = await Webhook.get_or_none(account_id=account.id)
     if webhook is None:
-        return {"url": None, "secret": None, "deliveries": []}
+        return {"url": None, "secret": None, "disabled_at": None, "disabled_reason": None, "failed": 0, "deliveries": []}
     # Without their payloads, which the page doesn't show.
     deliveries = await WebhookDelivery.filter(webhook_id=webhook.id).order_by(
         "-created_at", "-id"
@@ -842,6 +845,11 @@ async def webhook_of(account: Account) -> dict:
     return {
         "url": webhook.url,
         "secret": webhook.secret,
+        # When the worker disabled it, and why: meanwhile, its events wait.
+        "disabled_at": webhook.disabled_at and webhook.disabled_at.isoformat(),
+        "disabled_reason": webhook.disabled_reason,
+        # The events that failed, which the page can send again.
+        "failed": await WebhookDelivery.filter(webhook_id=webhook.id, status="FAILED").count(),
         "deliveries": [
             {
                 "id": delivery.message_id,
@@ -877,9 +885,9 @@ async def set_webhook(webhook_in: WebhookIn, user: OpenID = Depends(get_logged_u
         account=account, defaults={"url": webhook_in.url, "secret": new_secret()}
     )
     if not created:
-        # The pending deliveries go to the new URL.
-        webhook.url = webhook_in.url
-        await webhook.save(update_fields=["url"])
+        # The pending deliveries go to the new URL. Saving it enables the webhook
+        # again, if the worker disabled it, with its failures forgotten.
+        await Webhook.filter(id=webhook.id).update(url=webhook_in.url, **WEBHOOK_WORKING)
     return await webhook_of(account)
 
 
@@ -900,6 +908,16 @@ async def new_webhook_secret(user: OpenID = Depends(get_logged_user)):
     return await webhook_of(account)
 
 
+async def enabled_webhook(account: Account) -> Webhook:
+    """The account's webhook, to send events to: 404 without one, and 409 while it's disabled, when they'd wait."""
+    webhook = await Webhook.get_or_none(account_id=account.id)
+    if webhook is None:
+        raise HTTPException(status_code=404, detail="Set a webhook URL first.")
+    if webhook.disabled_at is not None:
+        raise HTTPException(status_code=409, detail="Enable the webhook first.")
+    return webhook
+
+
 @app.post("/user/webhook/test", include_in_schema=False)
 async def test_webhook(user: OpenID = Depends(get_logged_user)):
     """
@@ -908,9 +926,7 @@ async def test_webhook(user: OpenID = Depends(get_logged_user)):
     otherwise, users could send any number of requests anywhere.
     """
     account = await Account.get(google_id=user.id)
-    webhook = await Webhook.get_or_none(account_id=account.id)
-    if webhook is None:
-        raise HTTPException(status_code=404, detail="Set a webhook URL first.")
+    webhook = await enabled_webhook(account)
     tests = WebhookDelivery.filter(webhook_id=webhook.id, type="webhook.test")
     if await tests.filter(created_at__gt=datetime.datetime.now(tz=datetime.timezone.utc) - WEBHOOK_TEST_INTERVAL).exists():
         raise HTTPException(
@@ -919,6 +935,30 @@ async def test_webhook(user: OpenID = Depends(get_logged_user)):
         )
     await tests.filter(status="PENDING").delete()
     await WebhookDelivery.queue(webhook, "webhook.test", {})
+    return await webhook_of(account)
+
+
+@app.post("/user/webhook/enable", include_in_schema=False)
+async def enable_webhook(user: OpenID = Depends(get_logged_user)):
+    """Enable the webhook again, after the worker disabled it: the events that wait go out."""
+    account = await Account.get(google_id=user.id)
+    if not await Webhook.filter(account_id=account.id).update(**WEBHOOK_WORKING):
+        raise HTTPException(status_code=404, detail="Set a webhook URL first.")
+    return await webhook_of(account)
+
+
+@app.post("/user/webhook/resend", include_in_schema=False)
+async def resend_webhook_events(user: OpenID = Depends(get_logged_user)):
+    """
+    Send the webhook's failed events again, as new, with their IDs: for
+    example after an outage of the receiver, which skips the ones it got.
+    """
+    account = await Account.get(google_id=user.id)
+    webhook = await enabled_webhook(account)
+    await WebhookDelivery.filter(webhook_id=webhook.id, status="FAILED").update(
+        status="PENDING", attempts=0, next_attempt_at=datetime.datetime.now(tz=datetime.timezone.utc),
+        last_attempt_at=None, last_response=None,
+    )
     return await webhook_of(account)
 
 
@@ -934,7 +974,9 @@ async def api_key_page(
         request,
         "api_key_page.html",
         {
-            "root_prefix": root_prefix
+            "root_prefix": root_prefix,
+            # How long the events of a disabled webhook wait.
+            "webhook_keep_days": WEBHOOK_KEEP.days,
         }
     )
 
@@ -953,7 +995,9 @@ async def serve_page(
         request, "user_panel.html", {
             "root_prefix": root_prefix,
             # Admins get a button to the admin page.
-            "is_admin": await is_admin(user)
+            "is_admin": await is_admin(user),
+            # And users whose webhook the worker disabled, a notice.
+            "webhook_disabled": await Webhook.filter(account__google_id=user.id, disabled_at__isnull=False).exists(),
         }
     )
 

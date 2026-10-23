@@ -43,6 +43,11 @@
     <div class="w-full max-w-2xl p-6 mt-6 bg-white border border-gray-300 rounded-lg shadow-md">
         <h2 class="mb-4 text-xl font-bold text-gray-700 text-center">Webhook</h2>
         <p class="mb-4 text-sm text-gray-500">When each of your tasks ends, a POST with the task and its result goes to this URL, signed with the secret as <a href="https://www.standardwebhooks.com/" class="text-blue-600 underline">Standard Webhooks</a> says.</p>
+        <div id="webhook-disabled" class="hidden mb-4 p-4 text-sm text-red-700 bg-red-100 border border-red-300 rounded-md">
+            <p><strong>Disabled</strong> <span id="webhook-disabled-at"></span>. <span id="webhook-disabled-reason"></span></p>
+            <p class="mt-2">Its events wait, unsent, until you enable it again, for up to {{ webhook_keep_days }} days. Saving its URL enables it too.</p>
+            <button type="button" id="webhook-enable" class="mt-3 px-4 py-2 text-white bg-blue-500 rounded-lg hover:bg-blue-600">Enable</button>
+        </div>
         <label for="webhook_url" class="block text-sm font-medium text-gray-700">URL</label>
         <input
             type="url"
@@ -68,7 +73,10 @@
                 <button type="button" id="webhook-test" class="px-4 py-2 text-white bg-green-500 rounded-lg hover:bg-green-600">Send a test event</button>
             </div>
 
-            <h3 class="mt-6 mb-2 text-sm font-medium text-gray-700">Latest events</h3>
+            <div class="flex items-center justify-between gap-2 mt-6 mb-2">
+                <h3 class="text-sm font-medium text-gray-700">Latest events</h3>
+                <button type="button" id="webhook-resend" class="hidden px-3 py-1 text-sm text-white bg-gray-500 rounded-lg hover:bg-gray-600">Resend the failed events</button>
+            </div>
             <div class="overflow-x-auto">
                 <table class="w-full text-sm text-left text-gray-700">
                     <thead>

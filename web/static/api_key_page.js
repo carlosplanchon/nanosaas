@@ -75,6 +75,11 @@ const webhookUrlInput = document.getElementById('webhook_url');
 const webhookSecretInput = document.getElementById('webhook_secret');
 const webhookDetails = document.getElementById('webhook-details');
 const webhookRemoveButton = document.getElementById('webhook-remove');
+const webhookDisabled = document.getElementById('webhook-disabled');
+const webhookDisabledAt = document.getElementById('webhook-disabled-at');
+const webhookDisabledReason = document.getElementById('webhook-disabled-reason');
+const webhookTestButton = document.getElementById('webhook-test');
+const webhookResendButton = document.getElementById('webhook-resend');
 const webhookDeliveries = document.getElementById('webhook-deliveries');
 const webhookNoDeliveries = document.getElementById('webhook-no-deliveries');
 const webhookMessage = document.getElementById('webhook-message');
@@ -115,10 +120,19 @@ function showWebhook(data) {
     webhookSecretInput.value = data.secret ?? '';
     webhookDetails.classList.toggle('hidden', !data.url);
     webhookRemoveButton.classList.toggle('hidden', !data.url);
+    // When the worker disabled it, and why. As text: the reason has the receiver's answer.
+    webhookDisabled.classList.toggle('hidden', !data.disabled_at);
+    webhookDisabledAt.textContent = data.disabled_at ? `on ${new Date(data.disabled_at).toLocaleString()}` : '';
+    webhookDisabledReason.textContent = data.disabled_reason ?? '';
+    // Meanwhile, the events would wait: the server sends neither.
+    webhookTestButton.classList.toggle('hidden', Boolean(data.disabled_at));
+    webhookResendButton.classList.toggle('hidden', Boolean(data.disabled_at) || !data.failed);
+    webhookResendButton.textContent = `Resend the failed events (${data.failed})`;
     webhookDeliveries.replaceChildren(...data.deliveries.map(deliveryRow));
     webhookNoDeliveries.classList.toggle('hidden', data.deliveries.length > 0);
     clearTimeout(webhookRefresh);
-    if (document.hidden || !data.deliveries.some(delivery => delivery.status === 'PENDING')) {
+    // Not while it's disabled: its pending events wait.
+    if (document.hidden || data.disabled_at || !data.deliveries.some(delivery => delivery.status === 'PENDING')) {
         webhookDelay = 3000;
         return;
     }
@@ -192,8 +206,16 @@ document.getElementById('webhook-new-secret').addEventListener('click', () => {
     }
 });
 
-document.getElementById('webhook-test').addEventListener('click', () => changeWebhook(
+webhookTestButton.addEventListener('click', () => changeWebhook(
     'POST', '/test', null, 'Test event queued: it shows below, with how it went.'
+));
+
+document.getElementById('webhook-enable').addEventListener('click', () => changeWebhook(
+    'POST', '/enable', null, 'Enabled: the events that waited go out now.'
+));
+
+webhookResendButton.addEventListener('click', () => changeWebhook(
+    'POST', '/resend', null, 'The failed events go out again, with their IDs: they show below, with how they go.'
 ));
 
 // Initialize page
