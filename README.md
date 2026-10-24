@@ -35,9 +35,30 @@ I built the first version in three days, with almost no prior knowledge of web d
 
 ---
 
+## Using NanoSaaS as a template
+
+To start a project of your own on NanoSaaS, click **Use this template**, at the top of this repository on GitHub: you get a repository of your own with its files, and its CI, which runs the tests on each push. Install it as the next section says, cloning your repository, and make it yours:
+
+- Write your tasks in `taskiq_task.py`, instead of `divide` (see step 6 of Usage), with their tests.
+- Change the name where users see it: the titles of the pages in `web/templates/`, the logo, `web/static/nanosaas_logo.svg`, the title of `/docs` (`title` in `main_api.py`), the `User-Agent` of the webhooks (in `webhooks.py`), and the name of the account's export (in `main_api.py`). Some tests check them: change them there too. The internal names, like the prefixes of the keys in Redis, can stay.
+- In `pyproject.toml`, change its `name`, `description` and `version`, which `/docs` shows.
+- In `compose.yaml`, `name` names the containers and the volumes: change it before your first `docker compose up`. Changed afterwards, it gives the app other volumes, empty, and leaves its database and its backups in the old ones.
+- In this README, change what's about NanoSaaS: the banner and the badges at the top, which point to this repository, the paragraphs below them, and the Acknowledgments.
+- Keep `LICENSE`: the MIT License asks you to keep its copyright notice in your copies. Add your name for your own changes.
+
+A repository made from a template doesn't share its history with this one: GitHub can't merge them, nor open pull requests between them. So bring NanoSaaS's later fixes and migrations into yours by hand: add this repository as a remote, and cherry-pick the commits you want. Bring all the migrations, in order: each one follows the one before it.
+```bash
+git remote add nanosaas https://github.com/carlosplanchon/nanosaas.git
+git fetch nanosaas
+git cherry-pick <commit>
+```
+To follow NanoSaaS instead, getting its changes with `git pull`, clone it, as the next section does, or fork it.
+
+---
+
 ## Installation
 
-1. Clone the repository:
+1. Clone the repository, or the one you made from it as a template (see above):
     ```bash
     git clone https://github.com/carlosplanchon/nanosaas.git
     cd nanosaas
