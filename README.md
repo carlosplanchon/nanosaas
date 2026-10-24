@@ -1,6 +1,13 @@
 # NanoSaaS
 
+![NanoSaaS banner](https://raw.githubusercontent.com/carlosplanchon/nanosaas/main/assets/banner.jpg)
+
 NanoSaaS is a lightweight microservice platform for managing and tracking computational tasks. Write a task as an async Python function, and your users get a form to start it, an API route with its docs, and a history of its results, paying its cost in credits only when it succeeds. Designed with simplicity and scalability in mind, NanoSaaS is perfect for developers and small teams looking to automate background processes efficiently.
+
+[![CI](https://github.com/carlosplanchon/nanosaas/actions/workflows/tests.yml/badge.svg)](https://github.com/carlosplanchon/nanosaas/actions/workflows/tests.yml)
+[![Python versions](https://img.shields.io/python/required-version-toml?tomlFilePath=https://raw.githubusercontent.com/carlosplanchon/nanosaas/main/pyproject.toml)](https://github.com/carlosplanchon/nanosaas/blob/main/pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/carlosplanchon/nanosaas)
 
 I built the first version in three days, with almost no prior knowledge of web design or frontend development. Since then I've kept working on it: credits can't be overspent by concurrent requests, a task runs in one worker at a time, runs again if that worker dies, and gives its credits back if it fails, API keys are stored hashed, and the database has migrations. Integration tests run it in CI with PostgreSQL, Redis and real workers. What it doesn't do yet is under [Known Limitations](#known-limitations).
 
@@ -16,8 +23,6 @@ I built the first version in three days, with almost no prior knowledge of web d
 - **Data Persistence**: PostgreSQL with Tortoise ORM for secure data management.
 - **Modern UI**: Responsive frontend with Alpine.js and Tailwind CSS.
 - **Scalable Architecture**: Built with FastAPI and Docker-ready.
-
-### DeepWiki Docs: [https://deepwiki.com/carlosplanchon/nanosaas](https://deepwiki.com/carlosplanchon/nanosaas)
 
 ---
 
