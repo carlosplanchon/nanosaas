@@ -10,7 +10,7 @@ import time
 import asyncpg
 import pytest
 
-from tests.helpers import client_for, create_account, stored_api_key, wait_for_lock
+from tests.helpers import client_for, create_account, insert_task, stored_api_key, task_row, wait_for_lock
 
 pytestmark = pytest.mark.anyio
 
@@ -22,9 +22,9 @@ API_REQUESTS = (
 )
 
 
-async def create_key(user, name="New key"):
+async def create_key(user, name="New key", **options):
     """Create a key from the API key page: its answer, with the whole key, and the account's keys."""
-    r = await user.post("/user/api_keys", json={"name": name})
+    r = await user.post("/user/api_keys", json={"name": name, **options})
     assert r.status_code == 200, r.text
     return r.json()
 
@@ -236,6 +236,32 @@ async def test_the_page_shows_when_each_key_was_last_used(db, account, user, ano
     )
     assert await works(anon, account.api_key)
     assert utc(last_used(await keys_of(user), account.api_key)) > utc(used)
+
+
+async def test_a_read_only_key_reads_but_can_t_start_nor_cancel_tasks(db, account, user, anon):
+    created = await create_key(user, "Dashboard", read_only=True)
+    key = created["api_key"]
+    # Keys can do everything, unless they're created read-only.
+    assert [(item["name"], item["read_only"]) for item in created["api_keys"]] == [("Test key", False), ("Dashboard", True)]
+
+    task_id = await insert_task(db, account)
+    headers = {"X-API-Key": key}
+    for path in ("/api/user_credits", "/api/task_history", "/api/credit_history", f"/api/task_details/{task_id}"):
+        assert (await anon.get(path, headers=headers)).status_code == 200, path
+
+    read_only = (403, {"detail": "This API key is read-only: it can't start or cancel tasks."})
+    r = await anon.post("/api/task/divide", json={"x": 1, "y": 1}, headers=headers)
+    assert (r.status_code, r.json()) == read_only
+    r = await anon.post(f"/api/task/cancel/{task_id}", headers=headers)
+    assert (r.status_code, r.json()) == read_only
+    # Nothing started, and nothing was canceled.
+    assert await account.credits() == 5
+    assert await db.fetchval("SELECT count(*) FROM taskhistory WHERE user_id = $1", account.id) == 1
+    assert (await task_row(db, task_id))[0] == "PENDING"
+
+    # The account's other key does it.
+    r = await anon.post(f"/api/task/cancel/{task_id}", headers={"X-API-Key": account.api_key})
+    assert (r.status_code, r.json()["status"]) == (200, "CANCELED")
 
 
 async def test_the_key_routes_take_only_the_session(account, anon):

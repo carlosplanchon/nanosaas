@@ -112,6 +112,15 @@ async def insert_task(db, account, status="PENDING", result=None, cost=1):
     return task_id
 
 
+async def insert_movement(db, account, amount, balance, reason, task_id=None):
+    """A change of the account's credits in its history, without changing them."""
+    await db.execute(
+        "INSERT INTO creditmovement (account_id, amount, balance, reason, task_id, created_at) "
+        "VALUES ($1, $2, $3, $4, $5, now())",
+        account.id, amount, balance, reason, task_id,
+    )
+
+
 async def start_divide(server, account):
     """Start a divide, which takes 5 seconds, from the account's panel: its task ID."""
     async with client_for(server, account.cookie) as user:

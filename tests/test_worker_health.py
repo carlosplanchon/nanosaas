@@ -105,6 +105,25 @@ async def test_without_postgresql_the_heartbeat_stops(services, start_server, st
         proxy.stop()
 
 
+async def test_without_redis_the_heartbeat_stops_and_the_log_says_why(services, start_server, start_worker):
+    host, port = services.redis_url.removeprefix("redis://").split("/")[0].rsplit(":", 1)
+    proxy = Proxy(host, int(port))
+    try:
+        # On its own Redis database, so this worker gets no other test's tasks.
+        server = start_server("heartbeat-redis", broker=f"redis://{proxy.address[0]}:{proxy.address[1]}/12")
+        worker = start_worker(server)
+        await first_heartbeat(worker)
+
+        proxy.close()
+        # The error's type and message, with the address it can't reach.
+        await wait_for_log(worker.log, "Heartbeat stopped: PostgreSQL or Redis doesn't answer: ConnectionError: ")
+        [line] = [line for line in worker.log.read_text().splitlines() if "Heartbeat stopped" in line]
+        assert f"connecting to {proxy.address[0]}:{proxy.address[1]}" in line, line
+    finally:
+        # Before the server and the worker stop, so they don't wait for its connections.
+        proxy.stop()
+
+
 def test_compose_checks_the_health_of_the_worker():
     compose = (REPO / "compose.yaml").read_text()
     assert 'test: ["CMD", "python", "scripts/worker_healthcheck.py"]' in compose

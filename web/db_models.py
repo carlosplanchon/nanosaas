@@ -129,6 +129,10 @@ class ApiKey(Model):
     created_at = fields.DatetimeField(auto_now_add=True)
     # When a request last came with it, within LAST_USE_PRECISION. None if none did.
     last_used_at = fields.DatetimeField(null=True)
+    # A key that only reads the account's tasks, credits and history: starting or
+    # canceling a task with it gets a 403 error. Also a default of the column: the
+    # keys from before it can do everything.
+    read_only = fields.BooleanField(default=False, db_default=False)
 
     @staticmethod
     def hash_key(key: str) -> str:
@@ -141,11 +145,12 @@ class ApiKey(Model):
         return self.key_hash[:8]
 
     @classmethod
-    async def generate(cls, account_id: int, name: str, limit: int) -> str | None:
+    async def generate(cls, account_id: int, name: str, limit: int, read_only: bool = False) -> str | None:
         """
-        A new key of an account, with a name: the key itself, which only its
-        hash is kept of. None if the account has `limit` keys already: its row
-        stays locked meanwhile, so concurrent requests can't go over it.
+        A new key of an account, with a name, read-only or not: the key itself,
+        which only its hash is kept of. None if the account has `limit` keys
+        already: its row stays locked meanwhile, so concurrent requests can't go
+        over it.
         """
         key = secrets.token_hex(32)  # 64 characters
         async with in_transaction():
@@ -154,13 +159,13 @@ class ApiKey(Model):
             await Account.select_for_update(no_key=True).get(id=account_id)
             if await cls.filter(account_id=account_id).count() >= limit:
                 return None
-            await cls.create(account_id=account_id, name=name, key_hash=cls.hash_key(key))
+            await cls.create(account_id=account_id, name=name, key_hash=cls.hash_key(key), read_only=read_only)
         return key
 
     @classmethod
-    async def account_of(cls, key: str) -> Account | None:
+    async def find(cls, key: str) -> "ApiKey | None":
         """
-        The account of a key, or None if the key isn't one, or was revoked.
+        A key, with its account, or None if the key isn't one, or was revoked.
         Saves when it was used, once every LAST_USE_PRECISION at most.
         """
         api_key = await cls.get_or_none(key_hash=cls.hash_key(key)).select_related("account")
@@ -169,7 +174,7 @@ class ApiKey(Model):
         now = timezone.now()
         if api_key.last_used_at is None or now - api_key.last_used_at >= LAST_USE_PRECISION:
             await cls.filter(id=api_key.id).update(last_used_at=now)
-        return api_key.account
+        return api_key
 
 
 class CreditMovement(Model):

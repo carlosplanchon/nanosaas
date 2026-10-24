@@ -10,7 +10,7 @@ import uuid
 
 import pytest
 
-from tests.helpers import age_task, client_for, create_account, insert_task
+from tests.helpers import age_task, client_for, create_account, insert_movement, insert_task
 
 pytestmark = pytest.mark.anyio
 
@@ -32,14 +32,6 @@ async def export(server, account):
         r = await user.get("/user/export")
     assert r.status_code == 200, r.text
     return r, json.loads(r.content)
-
-
-async def insert_movement(db, account, amount, balance, reason, task_id=None):
-    await db.execute(
-        "INSERT INTO creditmovement (account_id, amount, balance, reason, task_id, created_at) "
-        "VALUES ($1, $2, $3, $4, $5, now())",
-        account.id, amount, balance, reason, task_id,
-    )
 
 
 async def insert_webhook(db, account):

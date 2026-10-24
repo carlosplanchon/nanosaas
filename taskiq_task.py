@@ -150,6 +150,15 @@ async def renew_lease(task_id: str, started_at: datetime.datetime) -> None:
             logger.warning("Can't renew the lease of task %s: %s", task_id, e)
 
 
+def describe(error: BaseException) -> str:
+    """
+    An error as the logs write it: its type, and its message, if it has one.
+    Not its repr, which redis-py writes without the message, like
+    "network:ConnectionError".
+    """
+    return f"{type(error).__name__}: {error}" if str(error) else type(error).__name__
+
+
 async def ping_postgres() -> None:
     await Tortoise.get_connection("default").execute_query("SELECT 1")
 
@@ -190,7 +199,7 @@ async def beat() -> None:
         except Exception as e:
             # Once, not every few seconds.
             if beating:
-                logger.warning("Heartbeat stopped: PostgreSQL or Redis doesn't answer: %r", e)
+                logger.warning("Heartbeat stopped: PostgreSQL or Redis doesn't answer: %s", describe(e))
             beating = False
         await asyncio.sleep(HEARTBEAT)
 

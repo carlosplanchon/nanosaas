@@ -1,13 +1,17 @@
 """
-The admin page: for the emails in ADMINS, to see the accounts, give them
-credits and delete them. For anyone else, its routes don't exist.
+The admin page: for the emails in ADMINS, to see the accounts and their
+histories, give them credits and delete them. For anyone else, its routes
+don't exist.
 """
 import asyncio
+import datetime
 import hashlib
 
 import pytest
 
-from tests.helpers import ADMIN, ADMIN_EMAIL, client_for, insert_task, movements, session_cookie
+from tests.helpers import (
+    ADMIN, ADMIN_EMAIL, age_task, client_for, create_account, insert_movement, insert_task, movements, session_cookie
+)
 
 pytestmark = [pytest.mark.anyio, pytest.mark.usefixtures("worker")]
 
@@ -40,6 +44,10 @@ async def test_for_anyone_else_the_admin_routes_dont_exist(account, user, anon):
             # Not even a 422 for a wrong body.
             ("POST", f"/admin/accounts/{account.id}/credits", {"json": {"credits": 0}}),
             ("DELETE", f"/admin/accounts/{account.id}", {}),
+            ("GET", f"/admin/accounts/{account.id}/task_history", {}),
+            ("GET", f"/admin/accounts/{account.id}/credit_history", {}),
+            # Nor for a wrong page.
+            ("GET", f"/admin/accounts/{account.id}/task_history", {"params": {"limit": 0}}),
         ]:
             r = await client.request(method, path, **payload)
             assert (r.status_code, r.json()) == NOT_FOUND, path
@@ -100,6 +108,39 @@ async def test_an_admin_deletes_an_account_with_its_tasks(admin, server, db, acc
 
     r = await admin.delete(f"/admin/accounts/{account.id}")
     assert (r.status_code, r.json()) == (404, {"detail": "Account not found"})
+
+
+async def test_an_admin_sees_an_account_s_history_as_its_user_does(admin, db, account, user):
+    done = await insert_task(db, account, status="SUCCESS", result=2.0)
+    await age_task(db, done, datetime.timedelta(minutes=2))
+    error = {"status": "error", "message": "Can't divide by zero.", "error": "TaskError"}
+    failed = await insert_task(db, account, status="FAILURE", result=error)
+    await age_task(db, failed, datetime.timedelta(minutes=1))
+    pending = await insert_task(db, account)
+    for amount, balance, reason, task_id in [(5, 5, "opening", None), (-1, 4, "task", done), (-1, 3, "task", failed), (1, 4, "refund", failed)]:
+        await insert_movement(db, account, amount, balance, reason, task_id)
+    # Another account's, which isn't in it.
+    await insert_task(db, await create_account(db), status="SUCCESS", result=1.0)
+
+    for history in ("task_history", "credit_history"):
+        r = await admin.get(f"/admin/accounts/{account.id}/{history}")
+        assert (r.status_code, r.json()) == (200, (await user.get(f"/user/{history}")).json()), history
+
+    # A page at a time, the latest first, like the user's.
+    path = f"/admin/accounts/{account.id}/task_history"
+    first = (await admin.get(path, params={"limit": 2})).json()
+    assert ([task["task_id"] for task in first["tasks"]], first["has_more"]) == ([pending, failed], True)
+    second = (await admin.get(path, params={"limit": 2, "before": failed})).json()
+    assert ([task["task_id"] for task in second["tasks"]], second["has_more"]) == ([done], False)
+    path = f"/admin/accounts/{account.id}/credit_history"
+    first = (await admin.get(path, params={"limit": 3})).json()
+    assert ([m["reason"] for m in first["movements"]], first["has_more"]) == (["refund", "task", "task"], True)
+    second = (await admin.get(path, params={"limit": 3, "before": first["movements"][-1]["id"]})).json()
+    assert ([m["reason"] for m in second["movements"]], second["has_more"]) == (["opening"], False)
+
+    for history in ("task_history", "credit_history"):
+        r = await admin.get(f"/admin/accounts/0/{history}")
+        assert (r.status_code, r.json()) == (404, {"detail": "Account not found"})
 
 
 async def test_credits_given_while_tasks_start_add_up(admin, account, user):

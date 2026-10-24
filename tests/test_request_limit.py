@@ -5,6 +5,7 @@ until the next minute. The panel's requests don't count, and a Redis that
 doesn't answer doesn't hold up the API.
 """
 import asyncio
+import re
 import secrets
 import time
 
@@ -113,9 +114,10 @@ async def test_a_redis_that_doesnt_answer_doesnt_hold_up_the_api(services, start
                 started = time.monotonic()
                 assert await statuses(anon, "/api/credit_history", [account.api_key]) == [200]
                 assert time.monotonic() - started < 2
-        # Once a minute at most, instead of on each request.
+        # Once a minute at most, instead of on each request, with the error's type and message.
         log = (server.config.parent / "uvicorn.log").read_text()
         assert log.count("Redis doesn't count the API's requests") == 1
+        assert re.search(r"Redis doesn't count the API's requests, which go on without their limit: \w+Error: \S", log)
     finally:
         # Before the server stops, so it doesn't wait for the hung connections.
         proxy.stop()

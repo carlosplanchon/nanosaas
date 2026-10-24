@@ -75,7 +75,7 @@ from taskiq_redis.exceptions import ResultIsMissingError
 
 from taskiq_task import broker
 from taskiq_task import ATTEMPTS, LEASE, QUEUE_TIMEOUT, TIME_LIMIT
-from taskiq_task import LOG_FORMAT, TaskLost, ping_postgres, ping_redis, queue_task
+from taskiq_task import LOG_FORMAT, TaskLost, describe, ping_postgres, ping_redis, queue_task
 
 from web.db_models import (
     Account, ApiKey, CreditMovement, DeletedAccount, TaskHistory, Webhook, WebhookDelivery, json_time
@@ -511,8 +511,9 @@ class RequestCounter:
         except RedisError as e:
             if self.warned_at is None or time.monotonic() - self.warned_at >= 60:
                 self.warned_at = time.monotonic()
-                # With %s: redis-py's errors leave their message out of their repr.
-                logger.warning("Redis doesn't count the API's requests, which go on without their limit: %s", e)
+                logger.warning(
+                    "Redis doesn't count the API's requests, which go on without their limit: %s", describe(e)
+                )
             return None
         return count
 
@@ -520,21 +521,21 @@ class RequestCounter:
 request_counter = RequestCounter(CONFIG["taskiq"]["broker"])
 
 
-async def get_api_key_account(
+async def get_api_key(
     header_key: str | None = Security(api_key_header),
     query_key: str | None = Security(api_key_query)
-        ) -> Account:
+        ) -> ApiKey:
     """
-    Get the account of the API key, from the header or the query (see
-    ApiKey.account_of()), within MAX_REQUESTS_PER_MINUTE: over them, the
-    request gets a 429 error, with the seconds until the next minute.
+    Get the request's API key, with its account, from the header or the query
+    (see ApiKey.find()), within MAX_REQUESTS_PER_MINUTE of the account: over
+    them, the request gets a 429 error, with the seconds until the next minute.
     """
-    api_key = header_key or query_key
-    account = await ApiKey.account_of(api_key) if api_key else None
-    if not account:
+    key = header_key or query_key
+    api_key = await ApiKey.find(key) if key else None
+    if api_key is None:
         raise HTTPException(status_code=401, detail="Invalid API key")
     minute, retry_after = request_window(time.time())
-    count = await request_counter.count(account.id, minute)
+    count = await request_counter.count(api_key.account_id, minute)
     if count is not None and count > MAX_REQUESTS_PER_MINUTE:
         raise HTTPException(
             status_code=429,
@@ -542,7 +543,22 @@ async def get_api_key_account(
                    f"Try again in {retry_after} seconds.",
             headers={"Retry-After": str(retry_after)},
         )
-    return account
+    return api_key
+
+
+async def get_api_key_account(api_key: ApiKey = Depends(get_api_key)) -> Account:
+    """The account of the request's API key, read-only or not: for the routes that only read."""
+    return api_key.account
+
+
+async def get_full_api_key_account(api_key: ApiKey = Depends(get_api_key)) -> Account:
+    """
+    The account of the request's API key, unless the key is read-only: for
+    the routes that start or cancel tasks, which spend or give back credits.
+    """
+    if api_key.read_only:
+        raise HTTPException(status_code=403, detail="This API key is read-only: it can't start or cancel tasks.")
+    return api_key.account
 
 
 @app.get("/", include_in_schema=False)
@@ -903,6 +919,8 @@ API_KEY_NAME_LENGTH = 50
 class ApiKeyIn(BaseModel):
     # What the user calls it, like the client that uses it.
     name: str
+    # Whether it only reads, without starting or canceling tasks: say, for a dashboard.
+    read_only: bool = False
 
 
 def api_key_item(api_key: ApiKey) -> dict:
@@ -911,6 +929,7 @@ def api_key_item(api_key: ApiKey) -> dict:
         "id": api_key.id,
         "name": api_key.name,
         "prefix": api_key.prefix,
+        "read_only": api_key.read_only,
         "created_at": json_time(api_key.created_at),
         "last_used_at": json_time(api_key.last_used_at),
     }
@@ -931,14 +950,15 @@ async def get_api_keys(user: OpenID = Depends(get_logged_user)):
 @app.post("/user/api_keys", include_in_schema=False)
 async def create_api_key(api_key_in: ApiKeyIn, user: OpenID = Depends(get_logged_user)):
     """
-    Create an API key, with a name, besides the account's others. The answer
-    has the whole key: the only time it's shown, since only its hash is stored.
+    Create an API key, with a name, read-only or not, besides the account's
+    others. The answer has the whole key: the only time it's shown, since only
+    its hash is stored.
     """
     name = api_key_in.name.strip()
     if not 1 <= len(name) <= API_KEY_NAME_LENGTH:
         raise HTTPException(status_code=422, detail=f"Give the key a name, of up to {API_KEY_NAME_LENGTH} characters.")
     account = await Account.get(google_id=user.id)
-    key = await ApiKey.generate(account.id, name, MAX_API_KEYS)
+    key = await ApiKey.generate(account.id, name, MAX_API_KEYS, read_only=api_key_in.read_only)
     if key is None:
         raise HTTPException(
             status_code=409, detail=f"An account can have up to {MAX_API_KEYS} API keys: revoke one first."
@@ -1509,7 +1529,7 @@ def add_task_routes(name: str, task: AsyncTaskiqDecoratedTask) -> None:
     async def start_with_api_key(
         parameters: parameters_type,
         idempotency_key: IdempotencyKey = None,
-        account: Account = Depends(get_api_key_account)
+        account: Account = Depends(get_full_api_key_account)
             ):
         return await start_task(account, task, parameters.model_dump(mode="json"), idempotency_key)
 
@@ -1592,10 +1612,11 @@ async def cancel_task(account: Account, task_id: str) -> TaskOut:
 
 
 @app.post("/api/task/cancel/{task_id}", response_model=TaskOut)
-async def cancel_task_with_api_key(task_id: str, account: Account = Depends(get_api_key_account)):
+async def cancel_task_with_api_key(task_id: str, account: Account = Depends(get_full_api_key_account)):
     """
     Cancel a task that no worker started yet, getting its credits back. It
-    stays in the history, as CANCELED. One that started can't be canceled.
+    stays in the history, as CANCELED. One that started can't be canceled,
+    and a read-only key can't cancel any.
     """
     return await cancel_task(account, task_id)
 
@@ -1752,7 +1773,7 @@ async def answers(name: str, ping: typing.Callable[[], typing.Awaitable]) -> boo
         logger.warning("Health check: %s doesn't answer in %d seconds", name, HEALTH_TIMEOUT)
         return False
     if task.exception() is not None:
-        logger.warning("Health check: %s doesn't answer: %r", name, task.exception())
+        logger.warning("Health check: %s doesn't answer: %s", name, describe(task.exception()))
         return False
     return True
 
@@ -1792,7 +1813,7 @@ class CreditsIn(BaseModel):
 # Out of /docs, which anyone can read: for anyone but ADMINS, they don't exist.
 @app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
 async def admin_page(request: Request, admin: OpenID = Depends(get_admin)):
-    """The admin page: the accounts, with their credits, to give them more."""
+    """The admin page: the accounts, with their credits and histories, to give them more."""
     return templates.TemplateResponse(request, "admin.html", {"root_prefix": root_prefix})
 
 
@@ -1835,6 +1856,36 @@ async def admin_add_credits(account_id: int, body: CreditsIn, admin: OpenID = De
     account = await Account.get(id=account_id)
     logger.info("%s gave %d credits to %s", admin.email, body.credits, account.email)
     return {"credits": balance}
+
+
+async def admin_account(account_id: int) -> Account:
+    """An account, for the admin routes: a 404 error if there's none."""
+    account = await Account.get_or_none(id=account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+    return account
+
+
+@app.get("/admin/accounts/{account_id}/task_history", response_model=TaskHistoryOut, include_in_schema=False)
+async def admin_task_history(
+    account_id: int,
+    before: HistoryBefore = None,
+    limit: HistoryLimit = TASK_HISTORY_LIMIT,
+    admin: OpenID = Depends(get_admin)
+        ):
+    """A page of an account's tasks, as its user sees them: to answer a question about one."""
+    return await task_history_page(await admin_account(account_id), before, limit)
+
+
+@app.get("/admin/accounts/{account_id}/credit_history", response_model=CreditHistoryOut, include_in_schema=False)
+async def admin_credit_history(
+    account_id: int,
+    before: CreditsBefore = None,
+    limit: CreditsLimit = CREDIT_HISTORY_LIMIT,
+    admin: OpenID = Depends(get_admin)
+        ):
+    """A page of an account's credit history, as its user sees it: like why it has the credits it has."""
+    return await credit_history_page(await admin_account(account_id), before, limit)
 
 
 @app.delete("/admin/accounts/{account_id}", include_in_schema=False)

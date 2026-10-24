@@ -8,6 +8,9 @@
     <script src="{{ static_url('alpine-csp-3.17.4.min.js') }}" defer></script>
     <!-- Include Tailwind CSS -->
     <link rel="stylesheet" href="{{ static_url('tailwind.css') }}">
+    <!-- Include the script that colors the results' JSON, and the histories' -->
+    <script src="{{ static_url('json.js') }}"></script>
+    <script src="{{ static_url('history.js') }}"></script>
 </head>
 <body class="bg-gray-100 font-sans leading-normal tracking-normal">
     <div class="container mx-auto mt-10">
@@ -20,8 +23,8 @@
             </a>
         </div>
 
-        <!-- The accounts, to give them credits or delete them. Its expressions use only
-             the component's data and methods, in admin.js. -->
+        <!-- The accounts, to see their histories, give them credits or delete them. Its
+             expressions use only the component's data and methods, in admin.js. -->
         <div x-data="accountManager" class="bg-white p-6 rounded-lg shadow-md w-full mx-auto">
             <div class="flex flex-col md:flex-row items-center justify-center gap-4 mb-6">
                 <label class="block text-gray-700">
@@ -39,6 +42,7 @@
                             <th class="border p-2">Credits</th>
                             <th class="border p-2">Pending Tasks</th>
                             <th class="border p-2">Created At</th>
+                            <th class="border p-2">History</th>
                             <th class="border p-2">Add Credits</th>
                             <th class="border p-2">Delete Account</th>
                         </tr>
@@ -51,6 +55,9 @@
                                 <td class="border p-2 text-center" x-text="account.credits"></td>
                                 <td class="border p-2 text-center" x-text="account.pending_tasks"></td>
                                 <td class="border p-2 text-center" x-text="formatDate(account.created_at)"></td>
+                                <td class="border p-2 text-center">
+                                    <button x-on:click="viewHistory(account)" class="text-sm text-blue-500 hover:underline">View</button>
+                                </td>
                                 <td class="border p-2 text-center">
                                     <div class="flex gap-4 items-center justify-center">
                                         <input type="number" min="1" x-model="adding[account.id]" class="mt-1 p-2 border rounded-md w-full md:w-48">
@@ -67,6 +74,81 @@
                     </tbody>
                 </table>
             </div>
+
+            <!-- The history of the account chosen, as its user sees it: its tasks, and
+                 each change of its credits, a page at a time -->
+            <template x-if="viewing">
+                <div class="mt-10">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="text-xl font-bold text-gray-700">History of <span x-text="viewing.email"></span></h2>
+                        <button x-on:click="closeHistory()" class="text-blue-500 hover:underline">Close</button>
+                    </div>
+
+                    <h3 class="mb-2 font-semibold text-gray-700">Tasks</h3>
+                    <div class="overflow-x-auto">
+                        <table class="table-auto w-full border-collapse border border-gray-300">
+                            <thead>
+                                <tr class="bg-gray-200">
+                                    <th class="border p-2">Task ID</th>
+                                    <th class="border p-2">Task</th>
+                                    <th class="border p-2">Parameters</th>
+                                    <th class="border p-2">Status</th>
+                                    <th class="border p-2">Result</th>
+                                    <th class="border p-2">Created At</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="task in tasks" :key="task.task_id">
+                                    <tr class="hover:bg-gray-100">
+                                        <td class="border p-2 text-center" x-text="task.task_id"></td>
+                                        <td class="border p-2 text-center" x-text="task.task_type"></td>
+                                        <td class="border p-2 text-center" x-text="formatParameters(task.parameters)"></td>
+                                        <td class="border p-2 text-center" x-text="task.status"></td>
+                                        <td class="border p-2 text-center" x-effect="showResult($el, task)"></td>
+                                        <td class="border p-2 text-center" x-text="task.created_at"></td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                    <p x-show="tasks.length === 0" class="mt-2 text-sm text-gray-500">No tasks.</p>
+                    <div class="flex mt-4">
+                        <button x-show="taskPages.length > 1" x-on:click="newerTasks()" class="text-blue-500 hover:underline">&larr; Newer tasks</button>
+                        <button x-show="moreTasks" x-on:click="olderTasks()" class="ml-auto text-blue-500 hover:underline">Older tasks &rarr;</button>
+                    </div>
+
+                    <h3 class="mt-8 mb-2 font-semibold text-gray-700">Credit History</h3>
+                    <div class="overflow-x-auto">
+                        <table class="table-auto w-full border-collapse border border-gray-300">
+                            <thead>
+                                <tr class="bg-gray-200">
+                                    <th class="border p-2">Date</th>
+                                    <th class="border p-2">Change</th>
+                                    <th class="border p-2">Balance</th>
+                                    <th class="border p-2">Why</th>
+                                    <th class="border p-2">Task</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="movement in movements" :key="movement.id">
+                                    <tr class="hover:bg-gray-100">
+                                        <td class="border p-2 text-center" x-text="movement.created_at"></td>
+                                        <td class="border p-2 text-center font-semibold" :class="movement.amount < 0 ? 'text-red-600' : 'text-green-600'" x-text="formatAmount(movement.amount)"></td>
+                                        <td class="border p-2 text-center" x-text="movement.balance"></td>
+                                        <td class="border p-2 text-center" x-text="reasonText(movement.reason)"></td>
+                                        <td class="border p-2 text-center" x-text="movement.task_id"></td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                    <p x-show="movements.length === 0" class="mt-2 text-sm text-gray-500">No changes.</p>
+                    <div class="flex mt-4">
+                        <button x-show="movementPages.length > 1" x-on:click="newerMovements()" class="text-blue-500 hover:underline">&larr; Newer changes</button>
+                        <button x-show="moreMovements" x-on:click="olderMovements()" class="ml-auto text-blue-500 hover:underline">Older changes &rarr;</button>
+                    </div>
+                </div>
+            </template>
         </div>
     </div>
 

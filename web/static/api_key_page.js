@@ -13,10 +13,12 @@ function sessionExpired(response) {
     return true;
 }
 
-// The API keys: their names, the start of each one, and when it was created and last used.
+// The API keys: their names, the start of each one, whether it's read-only, and when it
+// was created and last used.
 const apiKeysBody = document.getElementById('api-keys');
 const noApiKeys = document.getElementById('no-api-keys');
 const apiKeyNameInput = document.getElementById('api_key_name');
+const apiKeyReadOnlyInput = document.getElementById('api_key_read_only');
 const newApiKey = document.getElementById('new-api-key');
 const newApiKeyName = document.getElementById('new-api-key-name');
 const newApiKeyInput = document.getElementById('new_api_key');
@@ -27,7 +29,8 @@ const apiKeyError = document.getElementById('api-key-error');
 function apiKeyRow(apiKey) {
     const row = document.createElement('tr');
     const texts = [
-        apiKey.name, `${apiKey.prefix}…`, new Date(apiKey.created_at).toLocaleString(),
+        apiKey.name, `${apiKey.prefix}…`, apiKey.read_only ? 'Read-only' : 'Full',
+        new Date(apiKey.created_at).toLocaleString(),
         apiKey.last_used_at ? new Date(apiKey.last_used_at).toLocaleString() : 'Never',
     ];
     for (const text of texts) {
@@ -99,13 +102,15 @@ async function changeApiKeys(method, path, body, message) {
 document.getElementById('api-key-form').addEventListener('submit', async (event) => {
     event.preventDefault();
     const name = apiKeyNameInput.value.trim();
-    const data = await changeApiKeys('POST', '', { name }, '');
+    const readOnly = apiKeyReadOnlyInput.checked;
+    const data = await changeApiKeys('POST', '', { name, read_only: readOnly }, '');
     if (data) {
         // The only time it's shown: only its hash is stored.
-        newApiKeyName.textContent = name;
+        newApiKeyName.textContent = readOnly ? `${name} (read-only)` : name;
         newApiKeyInput.value = data.api_key;
         newApiKey.classList.remove('hidden');
         apiKeyNameInput.value = '';
+        apiKeyReadOnlyInput.checked = false;
         newApiKeyInput.select();
     }
 });

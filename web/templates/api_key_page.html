@@ -17,6 +17,7 @@
                     <tr class="text-gray-500">
                         <th class="px-2 py-1">Name</th>
                         <th class="px-2 py-1">Key</th>
+                        <th class="px-2 py-1">Access</th>
                         <th class="px-2 py-1">Created</th>
                         <th class="px-2 py-1">Last used</th>
                         <th class="px-2 py-1"></th>
@@ -39,6 +40,10 @@
                 />
                 <button type="submit" class="px-4 py-2 text-white bg-blue-500 rounded-lg hover:bg-blue-600">Create</button>
             </div>
+            <label class="flex items-center gap-2 mt-2 text-sm text-gray-700">
+                <input type="checkbox" id="api_key_read_only" />
+                Read-only: it gets the tasks and the credits, but can't start or cancel tasks.
+            </label>
         </form>
 
         <div id="new-api-key" class="hidden mt-4 p-4 bg-green-50 border border-green-300 rounded-md">

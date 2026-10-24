@@ -4,6 +4,7 @@ and 503 when one of them doesn't answer, down or hung, without waiting
 for it more than HEALTH_TIMEOUT seconds.
 """
 import time
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -32,6 +33,13 @@ async def test_without_redis_it_isnt(broker_down_server):
         r, seconds = await timed_health(client)
     assert (r.status_code, r.json()) == (503, {"status": "error", "postgres": "ok", "redis": "error"})
     assert seconds < 4
+    # The log says why: the error's type and message, with the address it can't reach.
+    address = tomllib.loads(broker_down_server.config.read_text())["taskiq"]["broker"].split("/")[2]
+    lines = (broker_down_server.config.parent / "uvicorn.log").read_text().splitlines()
+    assert any(
+        "Health check: Redis doesn't answer: ConnectionError: " in line and f"connecting to {address}" in line
+        for line in lines
+    ), [line for line in lines if "Health check" in line]
 
 
 @pytest.mark.parametrize("fault", ["hang", "close"])
@@ -50,6 +58,15 @@ async def test_without_postgresql_it_isnt(services, start_server, fault):
     finally:
         # Before the server stops, so it doesn't wait for the hung connections.
         proxy.stop()
+
+
+def test_the_logs_write_an_error_with_its_type_and_its_message(app_module):
+    from redis.exceptions import ConnectionError
+    # Not its repr, which redis-py writes without the message: "network:ConnectionError".
+    error = ConnectionError("Error 111 connecting to redis:6379. Connection refused.")
+    assert app_module.describe(error) == "ConnectionError: Error 111 connecting to redis:6379. Connection refused."
+    # One without a message, like asyncio.wait_for()'s.
+    assert app_module.describe(TimeoutError()) == "TimeoutError"
 
 
 def test_compose_checks_the_health_of_the_api():

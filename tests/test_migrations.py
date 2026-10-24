@@ -121,12 +121,12 @@ async def test_a_database_from_before_the_migrations_keeps_its_data(services, st
                 # A key from before the hashing works too: it's hashed on its way to its table.
                 r = await anon.get("/api/user_credits", headers={"X-API-Key": plain.api_key})
                 assert r.json() == {"credits": 5}
-            # Each account's key is its first one, once.
+            # Each account's key is its first one, once, and can still do everything.
             for owner, keys in [(account, [account.api_key]), (plain, [plain.api_key]), (keyless, [])]:
                 async with client_for(server, owner.cookie) as user:
                     r = await user.get("/user/api_keys")
-                assert [(key["name"], key["prefix"]) for key in r.json()["api_keys"]] == [
-                    ("Default", api_key[:8]) for api_key in keys
+                assert [(key["name"], key["prefix"], key["read_only"]) for key in r.json()["api_keys"]] == [
+                    ("Default", api_key[:8], False) for api_key in keys
                 ]
             stored = await db.fetchval("SELECT key_hash FROM apikey WHERE account_id = $1", plain.id)
             assert stored == stored_api_key(plain.api_key)
