@@ -68,7 +68,8 @@ def services():
 
 def write_config(
     path, services, port, root_path="", broker=None, db_name=None, initial_credits=None, admins=None,
-    max_pending_tasks=None, max_body_size=None, allow_private_webhooks=None, db_address=None, **taskiq
+    max_pending_tasks=None, max_requests_per_minute=None, max_body_size=None, allow_private_webhooks=None,
+    db_address=None, **taskiq
 ):
     """
     db_address: another (host, port) for PostgreSQL, like a proxy's.
@@ -79,6 +80,7 @@ def write_config(
     app = "" if initial_credits is None else f"INITIAL_CREDITS = {initial_credits}\n"
     app += "" if admins is None else f"ADMINS = {json.dumps(admins)}\n"
     app += "" if max_pending_tasks is None else f"MAX_PENDING_TASKS = {max_pending_tasks}\n"
+    app += "" if max_requests_per_minute is None else f"MAX_REQUESTS_PER_MINUTE = {max_requests_per_minute}\n"
     app += "" if max_body_size is None else f"MAX_BODY_SIZE = {max_body_size}\n"
     app += "" if allow_private_webhooks is None else f"ALLOW_PRIVATE_WEBHOOKS = {json.dumps(allow_private_webhooks)}\n"
     settings = "".join(f"{key} = {value}\n" for key, value in taskiq.items())
@@ -305,6 +307,20 @@ def limited_server(tmp_path_factory, services, server):
     """
     broker = services.redis_url.rsplit("/", 1)[0] + "/8"
     process, limited = run_server(tmp_path_factory, services, "limited", broker=broker, max_pending_tasks=3)
+    yield limited
+    process.stop()
+
+
+@pytest.fixture(scope="session")
+def request_limit_server(tmp_path_factory, services, server):
+    """
+    The API with MAX_REQUESTS_PER_MINUTE = 5, on its own Redis database, which
+    keeps its counts of requests apart.
+    """
+    broker = services.redis_url.rsplit("/", 1)[0] + "/2"
+    process, limited = run_server(
+        tmp_path_factory, services, "request-limit", broker=broker, max_requests_per_minute=5
+    )
     yield limited
     process.stop()
 

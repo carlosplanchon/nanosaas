@@ -15,7 +15,11 @@ import json
 
 import logging
 
+import math
+
 import sys
+
+import time
 
 import tomllib
 
@@ -60,6 +64,11 @@ from starlette.datastructures import Headers, MutableHeaders, QueryParams
 from starlette.responses import Response
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
+
+from redis.asyncio import Redis
+from redis.asyncio.retry import Retry
+from redis.backoff import NoBackoff
+from redis.exceptions import RedisError
 
 from taskiq import AsyncTaskiqDecoratedTask
 from taskiq_redis.exceptions import ResultIsMissingError
@@ -111,6 +120,11 @@ ADMINS: set[str] = {email.lower() for email in CONFIG["app"].get("ADMINS", [])}
 # tasks would wait behind its tasks, failing after queue_timeout.
 MAX_PENDING_TASKS: int = CONFIG["app"].get("MAX_PENDING_TASKS", 10)
 
+# The most requests an account can make to the API a minute, with all its keys:
+# otherwise, a client stuck in a loop could take the database's connections,
+# which the API shares among all the accounts. The panel's requests don't count.
+MAX_REQUESTS_PER_MINUTE: int = CONFIG["app"].get("MAX_REQUESTS_PER_MINUTE", 600)
+
 # The largest request body the API takes, in bytes. FastAPI reads the whole
 # body of a route, and parses it, before it checks the API key or the session:
 # without a limit, anyone could fill the API's memory (see BodySizeLimitMiddleware).
@@ -129,6 +143,7 @@ async def lifespan(app: FastAPI):
             yield
         finally:
             await broker.shutdown()
+            await request_counter.redis.aclose()
 
 
 # NanoSaaS's version, from pyproject.toml: that of its release, tagged like
@@ -458,16 +473,75 @@ async def get_admin(
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 api_key_query = APIKeyQuery(name="api_key", auto_error=False)
 
+# How long a request waits for Redis to count it, without trying again: a Redis
+# that doesn't answer in time doesn't hold up the API (see RequestCounter).
+REQUEST_COUNT_TIMEOUT = 0.5
+
+
+def request_window(now: float) -> tuple[int, int]:
+    """
+    The minute that a request at `now`, in seconds since the epoch, counts in,
+    and the seconds until the next one begins, from 1 to 60.
+    """
+    return int(now // 60), math.ceil(60 - now % 60)
+
+
+class RequestCounter:
+    """
+    Counts the API requests of each account in each minute, in the broker's
+    Redis, which keeps each count two minutes. A Redis that doesn't answer
+    within REQUEST_COUNT_TIMEOUT doesn't hold up the requests: they go on
+    without their limit, and the log says so, once a minute at most.
+    """
+
+    def __init__(self, url: str):
+        self.redis = Redis.from_url(
+            url, socket_timeout=REQUEST_COUNT_TIMEOUT, socket_connect_timeout=REQUEST_COUNT_TIMEOUT,
+            retry=Retry(NoBackoff(), 0),
+        )
+        # When the log last said that Redis didn't count a request, by time.monotonic().
+        self.warned_at: float | None = None
+
+    async def count(self, account_id: int, minute: int) -> int | None:
+        """The account's requests in that minute, with this one, or None if Redis didn't count it."""
+        key = f"nanosaas-requests:{account_id}:{minute}"
+        try:
+            async with self.redis.pipeline(transaction=True) as pipe:
+                count, _ = await pipe.incr(key).expire(key, 120).execute()
+        except RedisError as e:
+            if self.warned_at is None or time.monotonic() - self.warned_at >= 60:
+                self.warned_at = time.monotonic()
+                # With %s: redis-py's errors leave their message out of their repr.
+                logger.warning("Redis doesn't count the API's requests, which go on without their limit: %s", e)
+            return None
+        return count
+
+
+request_counter = RequestCounter(CONFIG["taskiq"]["broker"])
+
 
 async def get_api_key_account(
     header_key: str | None = Security(api_key_header),
     query_key: str | None = Security(api_key_query)
         ) -> Account:
-    """Get the account of the API key, from the header or the query (see ApiKey.account_of())."""
+    """
+    Get the account of the API key, from the header or the query (see
+    ApiKey.account_of()), within MAX_REQUESTS_PER_MINUTE: over them, the
+    request gets a 429 error, with the seconds until the next minute.
+    """
     api_key = header_key or query_key
     account = await ApiKey.account_of(api_key) if api_key else None
     if not account:
         raise HTTPException(status_code=401, detail="Invalid API key")
+    minute, retry_after = request_window(time.time())
+    count = await request_counter.count(account.id, minute)
+    if count is not None and count > MAX_REQUESTS_PER_MINUTE:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many requests: an account can make up to {MAX_REQUESTS_PER_MINUTE} a minute. "
+                   f"Try again in {retry_after} seconds.",
+            headers={"Retry-After": str(retry_after)},
+        )
     return account
 
 
