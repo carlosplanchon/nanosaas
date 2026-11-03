@@ -29,7 +29,7 @@ jobs:
           persist-credentials: false
 
       # uv, with that Python, and a cache of the packages it downloads.
-      - uses: astral-sh/setup-uv@v10.3.2
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           # The Dockerfile's.
           version: "0.13.5"
